@@ -1,5 +1,16 @@
 # 任意门 AnyDoor · 全局定位模拟
 
+<p align="center">
+  <a href="https://github.com/zhaoyuxiangyyds-lab/AnyDoor/releases/latest"><img src="https://img.shields.io/github/v/release/zhaoyuxiangyyds-lab/AnyDoor?style=flat-square&color=ff4d7d" alt="Release"></a>
+  <a href="https://github.com/zhaoyuxiangyyds-lab/AnyDoor/releases"><img src="https://img.shields.io/github/downloads/zhaoyuxiangyyds-lab/AnyDoor/total?style=flat-square&color=ff4d7d" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/Android-8.1%20~%2016-3ddc84?style=flat-square&logo=android&logoColor=white" alt="Android 8.1-16">
+  <img src="https://img.shields.io/badge/Xposed-LSPosed%20%7C%20Vector-blue?style=flat-square" alt="Xposed">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/zhaoyuxiangyyds-lab/AnyDoor?style=flat-square" alt="License"></a>
+  <a href="https://github.com/zhaoyuxiangyyds-lab/AnyDoor/stargazers"><img src="https://img.shields.io/github/stars/zhaoyuxiangyyds-lab/AnyDoor?style=flat-square&color=ffc83d" alt="Stars"></a>
+</p>
+
+<p align="center"><b>简体中文</b> · <a href="README_EN.md">English</a></p>
+
 > 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。
 > 在系统服务内部改写每个 App 收到的定位，并抹掉「模拟位置」标记；室内没有 GPS 信号也能持续输出坐标。
 
@@ -141,6 +152,13 @@ bash build.sh
 | **界面** | `WebView` 承载单页应用（`assets/web/`），`JsBridge` 做 JS↔Java 桥接；地图用 Leaflet + 高德瓦片。 |
 
 > 兼容性注意：不同 Xposed 分支交付 `system_server` 的包名可能是 `android` 或 `system`，本项目两者都处理。
+
+---
+
+## 🌟 支持一下
+
+如果这个项目对你有帮助，请点一个 **Star** ⭐ —— 这是对开源作者最直接的鼓励，也能让更多人找到它。
+遇到问题欢迎提 [Issue](../../issues)，有想法欢迎到 [Discussions](../../discussions) 聊聊。
 
 ---
 
