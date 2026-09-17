@@ -22,6 +22,28 @@ final class HookUtil {
     private static final Map<Integer, String[]> UID_CACHE = new HashMap<>();
     private static long uidCacheTime;
 
+    /** Hook every declared method whose name starts with one of the prefixes and returns String. */
+    static int hookByPrefix(Class<?> cls, String[] prefixes, XC_MethodHook cb) {
+        if (cls == null) return 0;
+        int n = 0;
+        try {
+            for (java.lang.reflect.Method m : cls.getDeclaredMethods()) {
+                if (m.getReturnType() != String.class) continue;
+                if (java.lang.reflect.Modifier.isAbstract(m.getModifiers())) continue;
+                for (String pre : prefixes) {
+                    if (m.getName().startsWith(pre)) {
+                        XposedBridge.hookMethod(m, cb);
+                        n++;
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            HookEntry.log("hookByPrefix " + cls.getName() + " failed: " + t);
+        }
+        return n;
+    }
+
     static int hookAll(Class<?> cls, String name, XC_MethodHook cb) {
         if (cls == null) return 0;
         try {

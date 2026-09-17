@@ -87,6 +87,7 @@
   <button class="nav" data-page="favorites"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9L3.5 9.7l5.9-.8z"/></svg>收藏夹</button>
   <button class="nav" data-page="history"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>历史记录</button>
   <button class="nav" data-page="route"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h5a4 4 0 0 0 0-8H11a4 4 0 0 1 0-8h5"/></svg>路线模拟</button>
+  <button class="nav" data-page="privacy"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/><circle cx="12" cy="16" r="1.5"/></svg>隐私加固</button>
   <button class="nav" data-page="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置</button>
   <button class="nav" data-page="env"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>环境检查</button>
   <button class="nav" data-page="about"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>关于与用法</button>
@@ -109,31 +110,71 @@
 <section class="page" id="page-route">
   <header><button class="back" data-back></button><h2>路线模拟</h2><button class="text" id="routeSave">保存路线</button></header>
   <div class="page-body">
-    <div class="card">
-      <div class="card-title">路径点 <span class="muted" id="routeCount">0 个</span></div>
-      <div class="list compact" id="routePoints"></div>
-      <div class="toolbar">
-        <button class="chip primary" id="routeEdit">在地图上添加路径点</button>
-        <button class="chip" id="routeAddCur">添加当前目标</button>
-        <button class="chip" id="routeClear">清空</button>
+    <div class="seg" id="routeTabs"><button class="on" data-tab="plan">起点 → 终点</button><button data-tab="manual">手动路径点</button></div>
+
+    <div id="routePlan">
+      <div class="card">
+        <div class="card-title">起点与终点</div>
+        <div class="ep"><span class="ep-dot start"></span><span class="ep-text" id="epStartText">当前模拟位置</span><button class="mini" id="epStartBtn">更改</button></div>
+        <div class="ep"><span class="ep-dot end"></span><span class="ep-text" id="epEndText">未设置终点</span><button class="mini" id="epEndBtn">选择</button></div>
+        <div class="toolbar" id="modeChips">
+          <button class="chip on" data-mode="walking">🚶 步行</button><button class="chip" data-mode="running">🏃 跑步</button>
+          <button class="chip" data-mode="bicycling">🚲 骑行</button><button class="chip" data-mode="driving">🚗 驾车</button>
+        </div>
+        <button class="chip primary full" id="routePlanBtn">规划路线（沿真实道路）</button>
+        <div class="muted small" id="planSummary">起点默认为当前模拟位置，选一个终点后即可规划。</div>
       </div>
     </div>
+
+    <div id="routeManual" class="hidden">
+      <div class="card">
+        <div class="card-title">路径点 <span class="muted" id="routeCount">0 个</span></div>
+        <div class="list compact" id="routePoints"></div>
+        <div class="toolbar">
+          <button class="chip primary" id="routeEdit">在地图上添加路径点</button>
+          <button class="chip" id="routeAddCur">添加当前目标</button>
+          <button class="chip" id="routeClear">清空</button>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="row"><span>速度</span><span class="muted" id="routeSpeedText">5 km/h</span></div>
       <input type="range" id="routeSpeed" min="1" max="120" step="1" value="5">
-      <div class="toolbar">
-        <button class="chip" data-speed="5">步行 5</button><button class="chip" data-speed="12">跑步 12</button>
-        <button class="chip" data-speed="20">骑行 20</button><button class="chip" data-speed="50">开车 50</button>
+      <div class="toolbar" id="speedChips"></div>
+      <div class="row"><span>速度随机波动</span><span class="muted" id="routeVarText">±20%</span></div>
+      <input type="range" id="routeVar" min="0" max="60" step="5" value="20">
+      <label class="row switch"><span class="rl">路口随机停顿<div class="desc">步行偶尔驻足，驾车等红灯</div></span><input type="checkbox" id="routePause" checked><i></i></label>
+      <div class="row col"><div class="rl" style="margin-bottom:6px">到达终点后</div>
+        <div class="seg" id="loopSeg"><button class="on" data-loop="none">停在终点</button><button data-loop="pingpong">原路返回</button><button data-loop="loop">循环</button></div>
       </div>
-      <label class="row switch"><span>到达终点后循环</span><input type="checkbox" id="routeLoop"><i></i></label>
       <div class="muted small" id="routeSummary">添加至少 2 个路径点</div>
     </div>
+
+    <div class="card">
+      <div class="card-title">计步同步</div>
+      <label class="row switch"><span class="rl">伪造计步传感器<div class="desc">让微信运动、Keep 等读到的步数跟着模拟行走增长。目标 App 必须加进模块作用域并重启该 App。</div></span><input type="checkbox" id="stepFake"><i></i></label>
+      <div class="row"><div class="rl">步幅</div><input type="number" id="stride" step="0.05" min="0.3" max="2" value="0.7"> <span class="muted" style="width:26px">m</span></div>
+      <div class="row"><div class="rl">当前累计步数</div><span class="muted"><b id="curSteps">0</b> 步 <button class="mini" id="stepsSet">修改</button></span></div>
+      <div class="muted small" id="stepEstimate"></div>
+      <div class="card-title" style="margin-top:12px">刷步数（不移动位置）</div>
+      <div class="row"><div class="rl">增加</div><input type="number" id="burstN" min="1" step="100" value="3000"> <span class="muted" style="width:26px">步</span></div>
+      <div class="row"><div class="rl">速率</div><input type="number" id="burstRate" min="10" step="10" value="110"> <span class="muted" style="width:46px">步/分</span></div>
+      <div class="toolbar"><button class="chip primary" id="burstGo">开始刷步</button><button class="chip" id="burstStop">停止</button></div>
+      <div class="muted small" id="burstText"></div>
+    </div>
+
     <button class="go" id="routeGo"><span id="routeGoText">开始路线模拟</span></button>
     <div class="card">
       <div class="card-title">已保存的路线</div>
       <div class="list compact" id="routeSaved"></div>
     </div>
   </div>
+</section>
+
+<section class="page" id="page-privacy">
+  <header><button class="back" data-back></button><h2>隐私加固</h2></header>
+  <div class="page-body" id="privacyBody"></div>
 </section>
 
 <section class="page" id="page-settings">
@@ -170,7 +211,8 @@
         <li>「环境检查」里确认框架已激活、作用域已配置，首次需重启一次。</li>
         <li>搜索地点、粘贴坐标或直接点地图，选好位置。</li>
         <li>点「开始模拟」。任何应用看到的都是这个位置，开关随时切换，无需重启。</li>
-        <li>用方向键 / 悬浮摇杆微调，或用「路线模拟」按速度沿路径移动。</li>
+        <li>用方向键 / 悬浮摇杆微调，或用「路线模拟」设起点终点，按步行 / 跑步 / 骑行 / 驾车沿真实道路移动，可同步伪造步数。</li>
+        <li>「隐私加固」一键屏蔽定位环境并伪造设备标识；说明里写清了做不到的部分。</li>
       </ol>
     </div>
     <div class="card">

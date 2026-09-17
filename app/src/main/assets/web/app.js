@@ -67,8 +67,12 @@ const S = {
   crs: 'wgs84',        // input CRS for pasted coords / display
   searchSrc: 'auto',
   page: null,
-  routePts: [],        // [{lat,lng}] WGS-84
+  routePts: [],        // [{lat,lng,s?}] WGS-84 – manual waypoints or the planned polyline
   routeRunning: false,
+  routeTab: 'plan',    // plan | manual
+  routeMode: 'walking',
+  routeLoop: 'none',   // none | pingpong | loop
+  plan: { start: null, end: null, planned: null },   // start/end: {lat,lng,name}; planned: {distance,duration,mode}
   favs: [], hist: [], routes: [],
   dpadStep: 5,
   night: false,
@@ -90,7 +94,11 @@ function initMap() {
   LAYERS.osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: 'OpenStreetMap' });
   patchGCJ();
   setLayer(S.layer, true);
-  map.on('click', (e) => { const w = fromMap(e.latlng.lat, e.latlng.lng); pickTarget(w[0], w[1], { reverse: true, fly: false }); vib(); });
+  map.on('click', (e) => {
+    const w = fromMap(e.latlng.lat, e.latlng.lng);
+    if (mapPick) { const f = mapPick; mapPick = null; vib(); f(w[0], w[1]); return; }
+    pickTarget(w[0], w[1], { reverse: true, fly: false }); vib();
+  });
   map.on('movestart', () => $('#results').classList.remove('open'));
 }
 // Convert WGS-84 -> current tile CRS for AutoNavi layers by overriding the projection at tile level.
@@ -333,8 +341,9 @@ async function refreshStatus() {
     rb.classList.remove('hidden');
     const pct = Math.min(100, svc.routeDone / svc.routeTotal * 100);
     $('#routeProg').style.width = pct.toFixed(1) + '%';
-    $('#routeText').textContent = '路线模拟 · ' + Math.round(svc.routeDone) + '/' + Math.round(svc.routeTotal) + ' m';
+    $('#routeText').textContent = (svc.paused ? '路口停顿 · ' : '路线模拟 · ') + Math.round(svc.routeDone) + '/' + Math.round(svc.routeTotal) + ' m';
   } else rb.classList.add('hidden');
+  if (S.page === 'route') updateStepStatus(svc);
   if (svc.mockError) $('#pill').classList.add('warn'); else $('#pill').classList.remove('warn');
   $('#fabJoy').classList.toggle('on', !!svc.joystick);
   updatePill(); updateSheet();
@@ -379,6 +388,7 @@ function openPage(id) {
   else if (id === 'settings') renderSettings();
   else if (id === 'env') renderEnv();
   else if (id === 'route') renderRoutePage();
+  else if (id === 'privacy') renderPrivacy();
   else if (id === 'about') $('#aboutVer').textContent = S.version;
 }
 function closePage() {
@@ -517,11 +527,121 @@ async function getConfig() { try { const st = JSON.parse(await N.getState()); re
 function saveConfig(obj) { N.setConfig(JSON.stringify(obj)); Object.assign(cfg, obj); }
 
 /* ==== route page ==== */
-function renderRoutePage() {
-  renderRoutePoints();
-  renderSavedRoutes();
-  $('#routeSpeed').value = 5; $('#routeSpeedText').textContent = '5 km/h';
+let mapPick = null;   // one-shot map click handler (start / end picking)
+const MODES = {
+  walking:   { name: '步行', def: 5,  min: 2,  max: 8,   stride: 0.7, chips: [3, 5, 6] },
+  running:   { name: '跑步', def: 10, min: 6,  max: 20,  stride: 1.1, chips: [8, 10, 12, 15] },
+  bicycling: { name: '骑行', def: 18, min: 8,  max: 35,  stride: 0,   chips: [12, 18, 25] },
+  driving:   { name: '驾车', def: 45, min: 15, max: 120, stride: 0,   chips: [30, 45, 60, 80, 100] },
+};
+async function renderRoutePage() {
+  cfg = await getConfig();
+  setRouteTab(S.routeTab);
+  applyMode(S.routeMode, true);
+  $('#stepFake').checked = !!cfg.step_fake;
+  $('#stride').value = cfg.stride || 0.7;
+  $$('#loopSeg button').forEach(b => b.classList.toggle('on', b.dataset.loop === S.routeLoop));
+  renderEndpoints(); renderRoutePoints(); renderSavedRoutes(); updateRouteSummary();
+  refreshStatus();
+}
+function setRouteTab(t) {
+  S.routeTab = t;
+  $$('#routeTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  $('#routePlan').classList.toggle('hidden', t !== 'plan');
+  $('#routeManual').classList.toggle('hidden', t !== 'manual');
+  if (t === 'manual' && S.plan.planned) { S.routePts = []; S.plan.planned = null; drawRoute(); }
+  if (t === 'plan' && !S.plan.planned && S.routePts.length) { S.routePts = []; drawRoute(); }
   updateRouteSummary();
+}
+function applyMode(m, keepSpeed) {
+  const M = MODES[m] || MODES.walking; S.routeMode = m;
+  $$('#modeChips .chip').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  const sl = $('#routeSpeed'); sl.min = M.min; sl.max = M.max;
+  if (!keepSpeed || +sl.value < M.min || +sl.value > M.max) sl.value = M.def;
+  $('#routeSpeedText').textContent = sl.value + ' km/h';
+  const sc = $('#speedChips'); sc.innerHTML = '';
+  M.chips.forEach(v => { const b = el('button', 'chip', v + ' km/h'); b.onclick = () => { sl.value = v; $('#routeSpeedText').textContent = v + ' km/h'; updateRouteSummary(); }; sc.appendChild(b); });
+  if (M.stride) $('#stride').value = M.stride;
+  if (S.plan.planned && S.plan.planned.mode !== m) { S.plan.planned = null; $('#planSummary').textContent = '交通方式已变，请重新规划。'; }
+  updateRouteSummary();
+}
+function renderEndpoints() {
+  const st = S.plan.start, en = S.plan.end;
+  $('#epStartText').textContent = st ? (st.name || fmt(st.lat, 5) + ', ' + fmt(st.lng, 5)) : '当前模拟位置' + (S.target ? '（' + (S.name || fmt(S.target.lat, 5) + ', ' + fmt(S.target.lng, 5)) + '）' : '');
+  $('#epEndText').textContent = en ? (en.name || fmt(en.lat, 5) + ', ' + fmt(en.lng, 5)) : '未设置终点';
+  drawEndpoints();
+}
+function endpointMenu(which) {
+  const set = (lat, lng, name) => { S.plan[which] = { lat, lng, name }; S.plan.planned = null; S.routePts = []; drawRoute(); renderEndpoints(); updateRouteSummary(); };
+  const acts = [];
+  if (which === 'start') acts.push({ t: '当前模拟位置（默认）', fn: () => { S.plan.start = null; S.plan.planned = null; renderEndpoints(); } });
+  else if (S.target) acts.push({ t: '当前模拟目标', fn: () => set(S.target.lat, S.target.lng, S.name) });
+  acts.push({ t: '在地图上点选', fn: () => { closePage(); toast('点击地图选择' + (which === 'start' ? '起点' : '终点')); mapPick = (lat, lng) => { set(lat, lng, (which === 'start' ? '起点' : '终点') + ' · 地图选点'); openPage('route'); }; } });
+  acts.push({ t: '搜索地点', fn: () => placePicker(which === 'start' ? '搜索起点' : '搜索终点', (it) => set(it.lat, it.lng, it.name)) });
+  if (S.favs.length) acts.push({ t: '从收藏选择', fn: () => listPicker('收藏夹', S.favs, (f) => set(f.lat, f.lng, f.name)) });
+  if (S.hist.length) acts.push({ t: '从历史选择', fn: () => listPicker('历史记录', S.hist, (h) => set(h.lat, h.lng, h.name)) });
+  if (which === 'start') acts.push({ t: '真实位置', fn: async () => { const r = await call('locate'); if (r && r.ok) set(r.lat, r.lng, '真实位置'); else toast(r && r.error || '定位失败'); } });
+  sheetMenu(which === 'start' ? '起点' : '终点', acts);
+}
+function listPicker(title, items, onPick) {
+  const m = openModal('<h3>' + esc(title) + '</h3><div class="picker-list" id="pl"></div><div class="actions"><button id="mc">取消</button></div>');
+  const box = m.querySelector('#pl');
+  items.slice(0, 40).forEach(it => { const b = el('button', '', esc(it.name || '未命名') + '<small>' + esc(it.addr || fmt(it.lat, 5) + ', ' + fmt(it.lng, 5)) + '</small>'); b.onclick = () => { closeModal(); onPick(it); }; box.appendChild(b); });
+  m.querySelector('#mc').onclick = closeModal;
+}
+function placePicker(title, onPick) {
+  const m = openModal('<h3>' + esc(title) + '</h3><input id="pq" placeholder="地点名称，或粘贴坐标" autocomplete="off"><div class="picker-list" id="pl"></div><div class="actions"><button id="mc">取消</button></div>');
+  const inp = m.querySelector('#pq'), box = m.querySelector('#pl');
+  m.querySelector('#mc').onclick = closeModal;
+  let seq = 0, timer;
+  inp.oninput = () => {
+    clearTimeout(timer);
+    const q = inp.value.trim();
+    const c = parseCoord(q);
+    if (c) { box.innerHTML = ''; const b = el('button', '', '坐标 ' + fmt(c[0]) + ', ' + fmt(c[1]) + '<small>' + c[2] + '</small>'); b.onclick = () => { closeModal(); onPick({ lat: c[0], lng: c[1], name: '坐标 ' + fmt(c[0], 4) + ', ' + fmt(c[1], 4) }); }; box.appendChild(b); return; }
+    if (q.length < 2) { box.innerHTML = ''; return; }
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      box.innerHTML = '<div class="muted small">搜索中…</div>';
+      const near = S.target || mapCenterWGS();
+      const r = await call('search', q, near.lat || 0, near.lng || 0);
+      if (my !== seq) return;
+      box.innerHTML = '';
+      if (!r || !r.ok || !r.items || !r.items.length) { box.innerHTML = '<div class="muted small">' + esc((r && r.error) || '没有找到相关地点') + '</div>'; return; }
+      r.items.forEach(it => { const b = el('button', '', esc(it.name) + '<small>' + esc(it.address || it.addr || '') + '</small>'); b.onclick = () => { closeModal(); onPick({ lat: it.lat, lng: it.lng, name: it.name, addr: it.address }); }; box.appendChild(b); });
+    }, 350);
+  };
+  setTimeout(() => inp.focus(), 50);
+}
+async function planRoute() {
+  const start = S.plan.start || (S.target ? { lat: S.target.lat, lng: S.target.lng } : null);
+  if (!start) { toast('请先设置起点'); return; }
+  if (!S.plan.end) { toast('请先选择终点'); return; }
+  const key = await getApp('amap_key', '');
+  if (!key || !key.trim()) { promptAmapKey(null, '路径规划需要高德 Key'); return; }
+  $('#planSummary').textContent = '正在规划…';
+  const r = await call('planRoute', JSON.stringify({ mode: S.routeMode, points: [start, S.plan.end] }));
+  if (!r || !r.ok) {
+    let msg = (r && r.error) || '规划失败';
+    if (/NO_KEY/.test(msg)) msg = '需要高德 Key';
+    else if (/DAILY_QUERY_OVER_LIMIT|CUQPS|QUOTA|LIMIT/i.test(msg)) msg = '高德 Key 今日额度用尽';
+    else if (/USERKEY|INVALID/i.test(msg)) msg = '高德 Key 无效（需「Web服务」类型）';
+    $('#planSummary').textContent = '规划失败：' + msg; toast('规划失败'); return;
+  }
+  S.routePts = r.points; S.plan.planned = { distance: r.distance, duration: r.duration, mode: S.routeMode };
+  drawRoute(); fitRoute(); updateRouteSummary(); vib();
+  const crossings = r.points.filter(p => p.s).length;
+  $('#planSummary').textContent = MODES[S.routeMode].name + '路线 · 全程 ' + fmtDist(r.distance) + ' · ' + r.points.length + ' 个路径点 · ' + crossings + ' 处路口 · 高德预计 ' + fmtDur(r.duration);
+}
+function fitRoute() { if (S.routePts.length > 1) map.fitBounds(L.latLngBounds(S.routePts.map(p => toMap(p.lat, p.lng))), { padding: [40, 40], maxZoom: 17 }); }
+let epMarkers = [];
+function drawEndpoints() {
+  epMarkers.forEach(m => map.removeLayer(m)); epMarkers = [];
+  if (S.routeTab !== 'plan') return;
+  const st = S.plan.start, en = S.plan.end;
+  const mk = (pt, cls, txt) => { const m = L.marker(toMap(pt.lat, pt.lng), { icon: L.divIcon({ className: '', html: '<div class="wp ' + cls + '">' + txt + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }), interactive: false }).addTo(map); epMarkers.push(m); };
+  if (st) mk(st, 'start', '起');
+  if (en) mk(en, 'end', '终');
 }
 function enterRouteAddMode() { routeAddMode = true; $('#routeEdit').classList.add('on'); $('#routeEdit').textContent = '点击地图添加（完成）'; closePage(); toast('点击地图添加路径点，完成后回到本页'); collapseSheet(true); }
 function exitRouteAddMode() { routeAddMode = false; const b = $('#routeEdit'); if (b) { b.classList.remove('on'); b.textContent = '在地图上添加路径点'; } clearRouteMarkers(); }
@@ -531,36 +651,58 @@ function drawRoute() {
   if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
   if (!S.routePts.length) return;
   const pts = S.routePts.map(p => toMap(p.lat, p.lng));
-  routeLine = L.polyline(pts, { color: '#3B82F6', weight: 4, opacity: .8, dashArray: '2 8' }).addTo(map);
-  pts.forEach((p, i) => { const m = L.marker(p, { icon: L.divIcon({ className: '', html: '<div class="wp">' + (i + 1) + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(map); routeMarkers.push(m); });
+  const planned = !!S.plan.planned;
+  routeLine = L.polyline(pts, { color: '#3B82F6', weight: planned ? 5 : 4, opacity: .85, dashArray: planned ? null : '2 8' }).addTo(map);
+  if (!planned) pts.forEach((p, i) => { const m = L.marker(p, { icon: L.divIcon({ className: '', html: '<div class="wp">' + (i + 1) + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(map); routeMarkers.push(m); });
 }
 function clearRouteMarkers() { routeMarkers.forEach(m => map.removeLayer(m)); routeMarkers = []; }
 function renderRoutePoints() {
   const box = $('#routePoints'); box.innerHTML = '';
-  $('#routeCount').textContent = S.routePts.length + ' 个';
-  if (!S.routePts.length) { box.appendChild(el('div', 'empty-state', '还没有路径点')); return; }
-  S.routePts.forEach((p, i) => {
+  const pts = S.plan.planned ? [] : S.routePts;
+  $('#routeCount').textContent = pts.length + ' 个';
+  if (!pts.length) { box.appendChild(el('div', 'empty-state', '还没有路径点')); return; }
+  pts.forEach((p, i) => {
     const it = el('div', 'item');
-    it.innerHTML = '<span class="ii">' + (i + 1) + '</span><span class="it"><div class="in">' + fmt(p.lat, 5) + ', ' + fmt(p.lng, 5) + '</div></span><button class="more">✕</button>';
+    it.innerHTML = '<span class="ii">' + (i + 1) + '</span><span class="it"><div class="in">路径点 ' + (i + 1) + '</div><div class="ia">' + fmt(p.lat, 5) + ', ' + fmt(p.lng, 5) + '</div></span><button class="more">✕</button>';
     it.querySelector('.more').onclick = () => { S.routePts.splice(i, 1); drawRoute(); renderRoutePoints(); updateRouteSummary(); };
     box.appendChild(it);
   });
 }
+function haversine(a, b) { const R = 6371008.8, p1 = a.lat * Math.PI / 180, p2 = b.lat * Math.PI / 180, dp = (b.lat - a.lat) * Math.PI / 180, dl = (b.lng - a.lng) * Math.PI / 180; const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2; return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)); }
+const fmtDist = (m) => m >= 1000 ? (m / 1000).toFixed(2) + ' km' : Math.round(m) + ' m';
+function routeDistance() { let d = 0; for (let i = 1; i < S.routePts.length; i++) d += haversine(S.routePts[i - 1], S.routePts[i]); return d; }
+function currentStride() { const M = MODES[S.routeMode]; if (!M.stride) return 0; const v = parseFloat($('#stride').value); return isNaN(v) || v <= 0 ? M.stride : v; }
 function updateRouteSummary() {
-  let d = 0; for (let i = 1; i < S.routePts.length; i++) d += haversine(S.routePts[i - 1], S.routePts[i]);
+  const d = routeDistance();
   const spd = parseFloat($('#routeSpeed').value) || 5;
   const sec = d / (spd / 3.6);
-  $('#routeSummary').textContent = S.routePts.length < 2 ? '添加至少 2 个路径点' : ('全程约 ' + Math.round(d) + ' m，' + fmtDur(sec) + '（' + spd + ' km/h）');
+  $('#routeVarText').textContent = '±' + $('#routeVar').value + '%';
+  const stride = currentStride();
+  $('#routeSummary').textContent = S.routePts.length < 2 ? (S.routeTab === 'plan' ? '先规划一条路线' : '添加至少 2 个路径点') : ('全程 ' + fmtDist(d) + '，约 ' + fmtDur(sec) + '（' + spd + ' km/h' + (S.routeLoop === 'pingpong' ? '，往返' : S.routeLoop === 'loop' ? '，循环' : '') + '）');
+  $('#stepEstimate').textContent = stride ? ('按步幅 ' + stride + ' m，全程约 ' + Math.round(d / stride) + ' 步' + (S.routeMode === 'running' ? '（跑步）' : '')) : '骑行 / 驾车不产生步数';
 }
-function haversine(a, b) { const R = 6371008.8, p1 = a.lat * Math.PI / 180, p2 = b.lat * Math.PI / 180, dp = (b.lat - a.lat) * Math.PI / 180, dl = (b.lng - a.lng) * Math.PI / 180; const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2; return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)); }
-const fmtDur = (s) => s < 60 ? Math.round(s) + ' 秒' : s < 3600 ? Math.round(s / 60) + ' 分钟' : (s / 3600).toFixed(1) + ' 小时';
+function fmtDur(sec) { if (!isFinite(sec)) return '--'; if (sec < 60) return Math.round(sec) + ' 秒'; if (sec < 3600) return Math.round(sec / 60) + ' 分钟'; return (sec / 3600).toFixed(1) + ' 小时'; }
 function startRouteSim() {
-  if (S.routePts.length < 2) { toast('至少需要 2 个路径点'); return; }
+  if (S.routePts.length < 2) { toast(S.routeTab === 'plan' ? '请先规划路线' : '至少需要 2 个路径点'); return; }
   const spd = (parseFloat($('#routeSpeed').value) || 5) / 3.6;
-  N.startRoute(JSON.stringify({ points: S.routePts, speed: spd, loop: $('#routeLoop').checked }));
+  saveConfig({ step_fake: $('#stepFake').checked, stride: parseFloat($('#stride').value) || 0.7 });
+  N.startRoute(JSON.stringify({ points: S.routePts, speed: spd, loop: S.routeLoop, mode: S.routeMode,
+    var: (parseFloat($('#routeVar').value) || 0) / 100, pause: $('#routePause').checked, stride: currentStride() }));
   S.running = true; S.routeRunning = true;
-  toast('路线模拟已开始'); vib(18);
-  closePage(); collapseSheet(false);
+  closePage(); collapseSheet(false); updatePill(); updateSheet();
+  toast('路线模拟开始 · ' + MODES[S.routeMode].name); vib(18);
+  setTimeout(refreshStatus, 400);
+}
+function updateStepStatus(svc) {
+  $('#curSteps').textContent = Math.round(svc.steps || cfg.steps || 0);
+  const left = Math.round(svc.burstLeft || 0);
+  $('#burstText').textContent = left > 0 ? ('刷步中，还剩 ' + left + ' 步') : '';
+}
+function stepBurst() {
+  const n = parseInt($('#burstN').value, 10), rate = parseInt($('#burstRate').value, 10);
+  if (!n || n <= 0) { toast('请输入步数'); return; }
+  saveConfig({ step_fake: true }); $('#stepFake').checked = true;
+  N.stepBurst(n, rate || 110); S.running = true; toast('开始刷步：' + n + ' 步 @ ' + (rate || 110) + ' 步/分'); vib();
   setTimeout(refreshStatus, 400);
 }
 function renderSavedRoutes() {
@@ -568,18 +710,76 @@ function renderSavedRoutes() {
   if (!S.routes.length) { box.appendChild(el('div', 'empty-state', '暂无保存的路线')); return; }
   S.routes.forEach((r, i) => {
     const it = el('div', 'item');
-    it.innerHTML = '<span class="ii">' + r.points.length + '</span><span class="it"><div class="in">' + esc(r.name) + '</div><div class="ia">' + r.points.length + ' 点 · ' + r.speed + ' km/h</div></span><button class="more">⋯</button>';
-    it.querySelector('.it').onclick = () => { S.routePts = r.points.slice(); $('#routeSpeed').value = r.speed; $('#routeSpeedText').textContent = r.speed + ' km/h'; $('#routeLoop').checked = !!r.loop; drawRoute(); renderRoutePoints(); updateRouteSummary(); toast('已载入路线'); };
+    const tag = r.planned ? (MODES[r.mode] || MODES.walking).name + ' · ' : '';
+    it.innerHTML = '<span class="ii">' + (r.planned ? '⇢' : '⤳') + '</span><span class="it"><div class="in">' + esc(r.name) + '</div><div class="ia">' + tag + r.points.length + ' 个点 · ' + r.speed + ' km/h' + (r.loop && r.loop !== 'none' && r.loop !== false ? ' · ' + (r.loop === 'pingpong' ? '往返' : '循环') : '') + '</div></span><button class="more">⋯</button>';
+    it.querySelector('.it').onclick = () => {
+      S.routePts = r.points.slice(); S.routeLoop = typeof r.loop === 'boolean' ? (r.loop ? 'loop' : 'none') : (r.loop || 'none');
+      if (r.planned) { S.plan.start = r.start || null; S.plan.end = r.end || null; S.plan.planned = { distance: routeDistance(), duration: 0, mode: r.mode }; S.routeTab = 'plan'; }
+      else { S.plan.planned = null; S.routeTab = 'manual'; }
+      setRouteTab(S.routeTab); applyMode(r.mode || 'walking', true); $('#routeSpeed').value = r.speed; $('#routeSpeedText').textContent = r.speed + ' km/h';
+      $$('#loopSeg button').forEach(b => b.classList.toggle('on', b.dataset.loop === S.routeLoop));
+      drawRoute(); renderEndpoints(); renderRoutePoints(); updateRouteSummary(); fitRoute(); toast('已载入路线');
+      if (r.planned) $('#planSummary').textContent = '已载入保存的' + MODES[r.mode || 'walking'].name + '路线 · ' + fmtDist(routeDistance());
+    };
     it.querySelector('.more').onclick = () => sheetMenu(r.name, [{ t: '删除', danger: true, fn: () => { S.routes.splice(i, 1); setJSON('routes', S.routes); renderSavedRoutes(); } }]);
     box.appendChild(it);
   });
 }
 function saveRoute() {
   if (S.routePts.length < 2) { toast('至少需要 2 个路径点'); return; }
-  modalInput('保存路线', '路线 ' + (S.routes.length + 1), (name) => {
-    S.routes.unshift({ name: name || '未命名路线', points: S.routePts.slice(), speed: parseFloat($('#routeSpeed').value) || 5, loop: $('#routeLoop').checked });
+  const def = S.plan.planned && S.plan.end ? ((S.plan.start ? S.plan.start.name : (S.name || '当前位置')) + ' → ' + S.plan.end.name) : '路线 ' + (S.routes.length + 1);
+  modalInput('保存路线', def, (name) => {
+    S.routes.unshift({ name: name || '未命名路线', points: S.routePts.slice(), speed: parseFloat($('#routeSpeed').value) || 5, loop: S.routeLoop,
+      mode: S.routeMode, planned: !!S.plan.planned, start: S.plan.start, end: S.plan.end });
     setJSON('routes', S.routes); renderSavedRoutes(); toast('已保存');
   });
+}
+
+/* ==== privacy page ==== */
+const ID_LABELS = { fake_imei: 'IMEI', fake_meid: 'MEID', fake_imsi: 'IMSI', fake_iccid: 'ICCID', fake_android_id: 'Android ID', fake_serial: '序列号', fake_phone: '手机号' };
+async function renderPrivacy() {
+  cfg = await getConfig();
+  const b = $('#privacyBody'); b.innerHTML = '';
+  const on = !!cfg.privacy;
+  const c0 = el('div', 'card');
+  c0.innerHTML = '<label class="big-switch switch"><div><div class="bt">一键隐私加固</div><div class="desc">对所有普通 App：屏蔽 WiFi / 基站 / GNSS / 蓝牙环境，伪造 IMEI、IMSI、ICCID、Android ID、序列号等设备标识，屏蔽气压计。不依赖是否正在模拟位置。</div></div><input type="checkbox" id="pvMaster"' + (on ? ' checked' : '') + '><i></i></label>';
+  b.appendChild(c0);
+  $('#pvMaster').onchange = (e) => { N.privacyPreset(e.target.checked); vib(); toast(e.target.checked ? '隐私加固已开启' : '隐私加固已关闭'); setTimeout(renderPrivacy, 150); };
+
+  b.appendChild(sectionTitle('细分开关'));
+  const c1 = el('div', 'card');
+  const envOn = cfg.wifi_block !== false && cfg.cell_block !== false && cfg.gnss_block !== false;
+  const envRow = switchRow('屏蔽定位环境', '_env', envOn, 'WiFi 列表、基站、原始 GNSS 一律返回空（三项一起切换）');
+  envRow.querySelector('input').onchange = (e) => saveConfig({ wifi_block: e.target.checked, cell_block: e.target.checked, gnss_block: e.target.checked });
+  c1.appendChild(envRow);
+  c1.appendChild(switchRow('伪造设备标识', 'id_spoof', cfg.id_spoof !== false, 'IMEI / MEID / IMSI / ICCID / Android ID / 序列号 / 本机号码；Android 10+ 普通 App 本就读不到 IMEI，此处主要覆盖 Android ID 与旧系统'));
+  c1.appendChild(switchRow('屏蔽蓝牙扫描', 'bt_block', cfg.bt_block !== false, '任何 App（包括系统设置）都扫不到蓝牙设备与 Beacon；需把「蓝牙」加入作用域'));
+  c1.appendChild(switchRow('屏蔽气压计', 'sensor_block', cfg.sensor_block !== false, '防止用气压反推楼层 / 海拔；仅对加入作用域的 App 生效'));
+  b.appendChild(c1);
+
+  b.appendChild(sectionTitle('虚拟设备身份'));
+  const c2 = el('div', 'card');
+  let ids = {};
+  try { ids = JSON.parse(await N.getIdentity()); } catch (e) {}
+  Object.keys(ID_LABELS).forEach(k => { const r = el('div', 'id-row'); r.innerHTML = '<span>' + ID_LABELS[k] + '</span><code>' + esc(ids[k] || '--') + '</code>'; c2.appendChild(r); });
+  const tb = el('div', 'toolbar');
+  tb.append(chip('重新生成身份', () => confirmModal('重新生成', '将生成一套新的随机标识。部分 App（银行、支付、游戏）可能因此判定为新设备并要求重新登录。', async () => { try { await N.regenIdentity(); } catch (e) {} toast('已生成新身份'); renderPrivacy(); }, '生成', true)),
+    chip('复制', () => { N.copy(Object.keys(ID_LABELS).map(k => ID_LABELS[k] + ': ' + (ids[k] || '')).join('\\n')); toast('已复制'); }));
+  c2.appendChild(tb);
+  const note = el('div', 'desc muted small'); note.style.marginTop = '8px'; note.textContent = '标识固定不变，App 会把它当作同一台「别的手机」。系统 App（设置 / SystemUI）、豁免应用看到的仍是真实值。';
+  c2.appendChild(note);
+  b.appendChild(c2);
+
+  b.appendChild(sectionTitle('必须知道的边界'));
+  const c3 = el('div', 'card warn-card');
+  c3.innerHTML = '<div class="card-title">这些做不到，任何软件都做不到</div><ul class="tight">' +
+    '<li><b>运营商</b>始终能通过基站知道 SIM 卡在哪；本工具只能挡住 App，挡不住运营商。真要不可定位：飞行模式 + 拔卡。</li>' +
+    '<li><b>公网 IP</b> 由网络决定，IP 归属地不会跟着模拟位置走（手机流量通常只精确到省）。</li>' +
+    '<li><b>GrapheneOS</b> 不能 Root、不能装 Xposed，本模块无法在其上运行；它自带的按 App 权限 / 网络 / 传感器开关已经覆盖了大部分需求。</li>' +
+    '<li><b>机型信息</b>（Build.MODEL 等）、厂商广告 ID（OAID）、账号登录态未伪造 —— 改机型容易让 App 崩溃或封号。</li>' +
+    '<li>计步 / 气压 / 客户端侧标识伪造只对<b>加入作用域</b>的 App 生效（强化模式）。</li>' +
+    '</ul><div class="muted small" style="margin-top:8px">新增的 hook 在更新本版本后需要<b>重启一次手机</b>；作用域里请勾上「蓝牙 (com.android.bluetooth)」。</div>';
+  b.appendChild(c3);
 }
 
 /* ==== env ==== */
@@ -704,7 +904,18 @@ function bind() {
   $('#routeStop').onclick = () => { N.stopRoute(); S.routeRunning = false; toast('已停止路线'); setTimeout(refreshStatus, 300); };
   $('#routeSave').onclick = saveRoute;
   $('#routeSpeed').oninput = () => { $('#routeSpeedText').textContent = $('#routeSpeed').value + ' km/h'; updateRouteSummary(); };
-  $$('#page-route [data-speed]').forEach(b => b.onclick = () => { $('#routeSpeed').value = b.dataset.speed; $('#routeSpeedText').textContent = b.dataset.speed + ' km/h'; updateRouteSummary(); });
+  $('#routeVar').oninput = updateRouteSummary;
+  $$('#routeTabs button').forEach(b => b.onclick = () => { setRouteTab(b.dataset.tab); renderEndpoints(); renderRoutePoints(); });
+  $$('#modeChips .chip').forEach(b => b.onclick = () => { applyMode(b.dataset.mode, false); vib(8); });
+  $$('#loopSeg button').forEach(b => b.onclick = () => { $$('#loopSeg button').forEach(x => x.classList.remove('on')); b.classList.add('on'); S.routeLoop = b.dataset.loop; updateRouteSummary(); });
+  $('#epStartBtn').onclick = () => endpointMenu('start');
+  $('#epEndBtn').onclick = () => endpointMenu('end');
+  $('#routePlanBtn').onclick = planRoute;
+  $('#stepFake').onchange = (e) => saveConfig({ step_fake: e.target.checked });
+  $('#stride').onchange = () => { const v = parseFloat($('#stride').value); if (v > 0) saveConfig({ stride: v }); updateRouteSummary(); };
+  $('#stepsSet').onclick = () => modalInput('设置当前累计步数', $('#curSteps').textContent, (v) => { const n = parseInt(v, 10); if (isNaN(n) || n < 0) return; N.setSteps(n); saveConfig({ steps: n }); $('#curSteps').textContent = n; toast('已设置'); });
+  $('#burstGo').onclick = stepBurst;
+  $('#burstStop').onclick = () => { N.stopSteps(); toast('已停止刷步'); setTimeout(refreshStatus, 300); };
   // env page
   $('#envRefresh').onclick = renderEnv;
   $('#envSetup').onclick = () => { toast('正在配置…'); call2(N.rootSetup).then(r => { openModal('<h3>一键配置结果</h3><p>' + esc(r) + '</p><div class="actions"><button class="primary" id="mo">好</button></div>').querySelector('#mo').onclick = closeModal; renderEnv(); }); };

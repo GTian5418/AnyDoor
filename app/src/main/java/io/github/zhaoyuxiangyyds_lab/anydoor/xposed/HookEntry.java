@@ -41,6 +41,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                 PhoneHooks.install(lp, state());
                 return;
             }
+            if ("com.android.bluetooth".equals(pkg)) {
+                BluetoothHooks.install(lp, state());
+                return;
+            }
             AppHooks.install(lp, state());
         } catch (Throwable t) {
             log("install failed for " + pkg + ": " + t);

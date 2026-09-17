@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.os.Binder;
+import android.os.Bundle;
 import android.os.Process;
 
 import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
@@ -109,6 +110,7 @@ final class SystemHooks {
                             XposedHelpers.callMethod(copy, "setMacAddress", "02:00:00:00:00:00");
                         } catch (Throwable ignored) {
                         }
+                        if (st.privacy()) hideSsid(copy);
                         p.setResult(copy);
                     } catch (Throwable t) {
                         HookEntry.log("getConnectionInfo mask failed: " + t);
@@ -143,12 +145,89 @@ final class SystemHooks {
             };
             for (String m : new String[]{"listen", "listenForSubscriber", "listenWithEventList"}) HookUtil.hookAll(tr, m, listen);
         }
+        installIdentityHooks(cl, st);
         HookEntry.log("system hooks installed (sdk " + android.os.Build.VERSION.SDK_INT + ")");
+    }
+
+    /** SSID → <unknown ssid>, network id → -1 on a WifiInfo copy (privacy mode). */
+    private static void hideSsid(Object wifiInfo) {
+        try {
+            Class<?> ssidCls = Class.forName("android.net.wifi.WifiSsid");
+            Object none = null;
+            // API 33 refactored WifiSsid: fromBytes(null) → empty ssid; 30–32: createFromHex(null); older: NONE
+            for (String m : new String[]{"fromBytes", "createFromHex"}) {
+                try {
+                    none = XposedHelpers.callStaticMethod(ssidCls, m, (Object) null);
+                    break;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (none == null) none = XposedHelpers.getStaticObjectField(ssidCls, "NONE");
+            XposedHelpers.callMethod(wifiInfo, "setSSID", none);
+            XposedHelpers.callMethod(wifiInfo, "setNetworkId", -1);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Privacy mode: Android ID and hardware serial as seen by normal apps. Both are served from
+     * system_server – the Settings provider answers Settings.Secure(ANDROID_ID) through
+     * ContentProvider.Transport.call, Build.getSerial() goes through DeviceIdentifiersPolicyService.
+     */
+    private static void installIdentityHooks(ClassLoader cl, final SpoofState st) {
+        Class<?> transport = XposedHelpers.findClassIfExists("android.content.ContentProvider$Transport", cl);
+        if (transport != null) {
+            HookUtil.hookAll(transport, "call", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    if (p.getThrowable() != null || !(p.getResult() instanceof Bundle)) return;
+                    boolean get = false, aid = false;
+                    for (Object a : p.args) {
+                        if ("GET_secure".equals(a)) get = true;
+                        else if ("android_id".equals(a)) aid = true;
+                    }
+                    if (!get || !aid || !st.idSpoof()) return;
+                    int uid = Binder.getCallingUid();
+                    if (HookUtil.isSystemUid(uid)) return;
+                    Object provider = null;
+                    try {
+                        provider = XposedHelpers.getSurroundingThis(p.thisObject);
+                    } catch (Throwable ignored) {
+                    }
+                    String pkg = HookUtil.callerPackage(provider, p.args, uid);
+                    if (HookUtil.isInfraPackage(pkg) || st.isExempt(pkg)) return;
+                    String fake = st.str(Keys.FAKE_ANDROID_ID, null);
+                    if (fake == null) return;
+                    Bundle b = new Bundle((Bundle) p.getResult());
+                    b.putString("value", fake);
+                    p.setResult(b);
+                    if (st.debug()) HookEntry.log("android_id → fake for " + pkg);
+                }
+            });
+        }
+        Class<?> policy = XposedHelpers.findClassIfExists(
+                "com.android.server.os.DeviceIdentifiersPolicyService$DeviceIdentifiersPolicy", cl);
+        if (policy != null) {
+            XC_MethodHook serial = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    // keep SecurityException for apps that may not read the serial at all
+                    if (p.getThrowable() != null || !st.idSpoof()) return;
+                    int uid = Binder.getCallingUid();
+                    if (HookUtil.isSystemUid(uid)) return;
+                    String pkg = HookUtil.callerPackage(null, p.args, uid);
+                    if (HookUtil.isInfraPackage(pkg) || st.isExempt(pkg)) return;
+                    String fake = st.str(Keys.FAKE_SERIAL, null);
+                    if (fake != null) p.setResult(fake);
+                }
+            };
+            HookEntry.log("serial hooks: " + HookUtil.hookByPrefix(policy, new String[]{"getSerial"}, serial));
+        }
     }
 
     /** Common gate for WiFi/cell blocking: started, feature on, caller is a normal app that is not exempt. */
     static boolean shouldBlock(SpoofState st, Object service, Object[] args, String featureKey) {
-        if (!st.started() || !st.bool(featureKey, true)) return false;
+        if (!(st.started() || st.privacy()) || !st.bool(featureKey, true)) return false;
         int uid = Binder.getCallingUid();
         if (HookUtil.isSystemUid(uid)) return false;
         String pkg = HookUtil.callerPackage(service, args, uid);

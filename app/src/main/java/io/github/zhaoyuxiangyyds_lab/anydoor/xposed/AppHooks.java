@@ -3,14 +3,21 @@ package io.github.zhaoyuxiangyyds_lab.anydoor.xposed;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.hardware.Sensor;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.util.SparseIntArray;
 
 import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
@@ -139,7 +146,199 @@ final class AppHooks {
                 }
             }
         });
+        installIdentityHooks(st);
+        installSensorHooks(st);
         HookEntry.log("app hooks installed in " + pkg);
+    }
+
+    // ------------------------------------------------------------------ privacy: identifiers
+
+    /** Client-side identity spoof for scoped apps (second layer over the system_server / phone hooks). */
+    private static void installIdentityHooks(final SpoofState st) {
+        XC_MethodHook fakeId = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (p.getThrowable() != null || p.getResult() == null || !st.idSpoof()) return;
+                String fake = st.fakeIdFor(((Method) p.method).getName());
+                if (fake != null) p.setResult(fake);
+            }
+        };
+        HookUtil.hookByPrefix(android.telephony.TelephonyManager.class,
+                new String[]{"getDeviceId", "getImei", "getMeid", "getSubscriberId", "getSimSerialNumber", "getLine1Number"}, fakeId);
+        if (Build.VERSION.SDK_INT >= 26) HookUtil.hookByPrefix(Build.class, new String[]{"getSerial"}, fakeId);
+        XC_MethodHook androidId = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                if (!st.idSpoof()) return;
+                for (Object a : p.args) {
+                    if ("android_id".equals(a)) {
+                        String fake = st.str(Keys.FAKE_ANDROID_ID, null);
+                        if (fake != null) p.setResult(fake);
+                        return;
+                    }
+                }
+            }
+        };
+        Class<?> secure = android.provider.Settings.Secure.class;
+        HookUtil.hookAll(secure, "getString", androidId);
+        HookUtil.hookAll(secure, "getStringForUser", androidId);
+        if (st.idSpoof()) {
+            try {
+                String fake = st.str(Keys.FAKE_SERIAL, null);
+                if (fake != null) XposedHelpers.setStaticObjectField(Build.class, "SERIAL", fake);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ sensors: pedometer & privacy
+
+    private static final int TYPE_PRESSURE = 6, TYPE_STEP_DETECTOR = 18, TYPE_STEP_COUNTER = 19;
+    private static final SparseIntArray HANDLE_TYPE = new SparseIntArray();
+    /** event queue → sensor handles registered on it (only step sensors are tracked) */
+    private static final WeakHashMap<Object, Set<Integer>> STEP_QUEUES = new WeakHashMap<>();
+    private static final WeakHashMap<Object, double[]> LAST_DELIVERED = new WeakHashMap<>();
+    private static final ThreadLocal<Boolean> INJECTING = new ThreadLocal<>();
+    private static Handler stepHandler;
+
+    /**
+     * Every sensor event reaches Java through SystemSensorManager$SensorEventQueue.dispatchSensorEvent
+     * (handle, values, accuracy, timestamp). We rewrite step counters to our fake total, drop the real
+     * step detector and barometer, and feed synthetic step events from a 1 s timer so a phone lying on
+     * the desk still "walks" for pedometer apps.
+     */
+    private static void installSensorHooks(final SpoofState st) {
+        Class<?> base = XposedHelpers.findClassIfExists("android.hardware.SystemSensorManager$BaseEventQueue", null);
+        Class<?> queue = XposedHelpers.findClassIfExists("android.hardware.SystemSensorManager$SensorEventQueue", null);
+        if (base == null || queue == null) {
+            HookEntry.log("sensor queues not found");
+            return;
+        }
+        HookUtil.hookAll(base, "addSensor", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (p.args.length == 0 || !(p.args[0] instanceof Sensor)) return;
+                Sensor sn = (Sensor) p.args[0];
+                int handle = handleOf(sn);
+                synchronized (AppHooks.class) {
+                    HANDLE_TYPE.put(handle, sn.getType());
+                    if (sn.getType() == TYPE_STEP_COUNTER || sn.getType() == TYPE_STEP_DETECTOR) {
+                        Set<Integer> hs = STEP_QUEUES.get(p.thisObject);
+                        if (hs == null) STEP_QUEUES.put(p.thisObject, hs = new HashSet<>());
+                        hs.add(handle);
+                        ensureStepTimer(st);
+                    }
+                }
+            }
+        });
+        HookUtil.hookAll(base, "removeSensor", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (p.args.length == 0 || !(p.args[0] instanceof Sensor)) return;
+                synchronized (AppHooks.class) {
+                    Set<Integer> hs = STEP_QUEUES.get(p.thisObject);
+                    if (hs != null) hs.remove(handleOf((Sensor) p.args[0]));
+                }
+            }
+        });
+        XC_MethodHook forget = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                synchronized (AppHooks.class) {
+                    STEP_QUEUES.remove(p.thisObject);
+                    LAST_DELIVERED.remove(p.thisObject);
+                }
+            }
+        };
+        HookUtil.hookAll(base, "removeAllSensors", forget);
+        HookUtil.hookAll(base, "dispose", forget);
+        HookUtil.hookAll(queue, "dispatchSensorEvent", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                if (p.args.length < 2 || !(p.args[0] instanceof Integer) || !(p.args[1] instanceof float[])) return;
+                int type;
+                synchronized (AppHooks.class) {
+                    type = HANDLE_TYPE.get((Integer) p.args[0], -1);
+                }
+                boolean injected = Boolean.TRUE.equals(INJECTING.get());
+                if (type == TYPE_STEP_COUNTER && st.stepFake()) {
+                    ((float[]) p.args[1])[0] = (float) st.num(Keys.STEPS, 0);
+                } else if (type == TYPE_STEP_DETECTOR && st.stepFake() && !injected) {
+                    p.setResult(null);
+                } else if (type == TYPE_PRESSURE && st.privacy() && st.bool(Keys.SENSOR_BLOCK, true)) {
+                    p.setResult(null);
+                }
+            }
+        });
+    }
+
+    private static int handleOf(Sensor s) {
+        try {
+            return (Integer) XposedHelpers.callMethod(s, "getHandle");
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** Main-looper timer that pushes synthetic step events to every registered step listener. */
+    private static synchronized void ensureStepTimer(final SpoofState st) {
+        if (stepHandler != null) return;
+        stepHandler = new Handler(Looper.getMainLooper());
+        stepHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (st.stepFake()) pumpSteps(st);
+                } catch (Throwable t) {
+                    HookEntry.log("step pump: " + t);
+                }
+                stepHandler.postDelayed(this, 1000);
+            }
+        }, 1000);
+    }
+
+    private static void pumpSteps(SpoofState st) {
+        double steps = Math.floor(st.num(Keys.STEPS, 0));
+        List<Object[]> work = new ArrayList<>();
+        synchronized (AppHooks.class) {
+            for (Map.Entry<Object, Set<Integer>> e : STEP_QUEUES.entrySet()) {
+                for (int h : e.getValue()) work.add(new Object[]{e.getKey(), h, HANDLE_TYPE.get(h, -1)});
+            }
+        }
+        long ts = SystemClock.elapsedRealtimeNanos();
+        for (Object[] w : work) {
+            Object q = w[0];
+            int handle = (Integer) w[1], type = (Integer) w[2];
+            double[] last;
+            synchronized (AppHooks.class) {
+                last = LAST_DELIVERED.get(q);
+                if (last == null) LAST_DELIVERED.put(q, last = new double[]{-1, steps});
+            }
+            if (type == TYPE_STEP_COUNTER) {
+                if (last[0] == steps) continue;
+                last[0] = steps;
+                float[] v = new float[16];
+                v[0] = (float) steps;
+                inject(q, handle, v, ts);
+            } else if (type == TYPE_STEP_DETECTOR) {
+                int n = (int) Math.min(6, steps - last[1]);
+                last[1] = steps;
+                float[] v = new float[16];
+                v[0] = 1f;
+                for (int i = 0; i < n; i++) inject(q, handle, v, ts - (n - 1 - i) * 150_000_000L);
+            }
+        }
+    }
+
+    private static void inject(Object queue, int handle, float[] values, long ts) {
+        INJECTING.set(true);
+        try {
+            XposedHelpers.callMethod(queue, "dispatchSensorEvent", handle, values, 3, ts);
+        } catch (Throwable t) {
+            HookEntry.log("inject step: " + t);
+        } finally {
+            INJECTING.set(false);
+        }
     }
 
     private static void hookGetter(Class<?> cls, String name, final SpoofState st, final String pkg, final int what) {

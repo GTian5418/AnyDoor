@@ -28,6 +28,24 @@ public final class Keys {
     public static final String APP_HOOK = "app_hook";  // per-app hooks in scoped apps
     public static final String DEBUG_LOG = "debug_log";
 
+    // route / pedometer (config)
+    public static final String STEPS = "steps";          // String(double) cumulative fake step count
+    public static final String STEP_FAKE = "step_fake";  // feed fake steps to step sensors in scoped apps
+    public static final String STRIDE = "stride";        // String(double) meters per step for joystick walking
+
+    // privacy hardening (config)
+    public static final String PRIVACY = "privacy";          // master switch
+    public static final String ID_SPOOF = "id_spoof";        // spoof IMEI/IMSI/ICCID/Android ID/serial/phone
+    public static final String BT_BLOCK = "bt_block";        // drop Bluetooth scan results
+    public static final String SENSOR_BLOCK = "sensor_block";// drop barometer etc. in scoped apps
+    public static final String FAKE_IMEI = "fake_imei";
+    public static final String FAKE_MEID = "fake_meid";
+    public static final String FAKE_IMSI = "fake_imsi";
+    public static final String FAKE_ICCID = "fake_iccid";
+    public static final String FAKE_ANDROID_ID = "fake_android_id";
+    public static final String FAKE_SERIAL = "fake_serial";
+    public static final String FAKE_PHONE = "fake_phone";
+
     // app-only (app)
     public static final String FAVORITES = "favorites";
     public static final String HISTORY = "history";

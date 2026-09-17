@@ -31,8 +31,10 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 - **A real map UI** (WebView + Leaflet + AMap tiles):
   - Place search, tap-to-pick, paste coordinates
   - **D-pad nudging** and a **floating joystick** overlay to walk around on top of any app
-  - **Route simulation** — set waypoints + speed (walk / bike / drive) and move along the path automatically
+  - **Route simulation** — pick start & destination, choose **walk / run / bike / drive**, and follow real roads (AMap directions); random speed variation, random stops at crossings, return trip or loop; manual waypoints still available
+  - **Pedometer sync** — fake step-counter sensor events while walking (WeChat Sport, Keep, …), configurable stride, plus a "add N steps" mode
   - Favorites, history, random jitter, light/dark theme
+- **One-tap privacy hardening** — blank Wi-Fi / cell / GNSS / Bluetooth environment + spoofed IMEI / IMSI / ICCID / Android ID / serial + barometer blocked; independent of location spoofing. The [limits](#-what-privacy-mode-cannot-do) are documented honestly.
 - **Coordinate systems handled for you** — internally WGS-84; display corrected to GCJ-02 for Chinese map tiles; paste WGS-84 / GCJ-02 / BD-09 and it converts.
 - **One-tap environment check** — verifies the framework is active, scope is correct and permissions are granted, and can fix them via root.
 
@@ -54,7 +56,8 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 1. **Install the APK** from [Releases](../../releases) (or [build it yourself](#-build-from-source)).
 2. **Enable the module** in LSPosed / Vector and tick these scopes:
    - ✅ **System Framework** (`android` / `system`) — required for the global hook
-   - ✅ **Phone** (`com.android.phone`) — for hiding cell-tower info
+   - ✅ **Phone** (`com.android.phone`) — for hiding cell-tower info and spoofing IMEI etc.
+   - ✅ **Bluetooth** (`com.android.bluetooth`) — optional, blocks BLE/classic scans in privacy mode
    - ✅ **AnyDoor itself** (`io.github.zhaoyuxiangyyds_lab.anydoor`)
 3. **Reboot once.** The `system_server` hook only loads at boot; after that you can start/stop spoofing freely with no further reboots.
 4. Open the app → **Environment Check** → make sure everything is ✓. If "Mock location" or "Overlay" permission is missing, tap **Fix with Root**.
@@ -62,7 +65,7 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 
 > CLI-based frameworks (e.g. Vector CLI):
 > ```sh
-> cli scope set io.github.zhaoyuxiangyyds_lab.anydoor android/0 system/0 com.android.phone/0 io.github.zhaoyuxiangyyds_lab.anydoor/0
+> cli scope set io.github.zhaoyuxiangyyds_lab.anydoor android/0 system/0 com.android.phone/0 com.android.bluetooth/0 io.github.zhaoyuxiangyyds_lab.anydoor/0
 > ```
 
 ---
@@ -74,8 +77,10 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 3. **Move around**
    - **D-pad** (cross icon): nudge by a fixed step
    - **Joystick** (dot icon): floating overlay you can drag while another app is in the foreground
-   - Drawer → **Route**: add waypoints, set speed, let it walk
+   - Drawer → **Route**: pick a destination (search / tap map / favorites), choose walk, run, bike or drive, tap **Plan** to get a real-road path, tune speed, variation, stops and return/loop, then start
 4. **Stop** — tap the button again or use the persistent notification.
+5. **Steps** (optional) — on the Route page enable **Fake step sensor**, add the target app (e.g. WeChat) to the module scope and restart it; steps grow with the simulated walk. "Add steps" bumps the counter at a chosen rate without moving.
+6. **Privacy hardening** (optional) — Drawer → **Privacy**, flip the master switch. The page shows the current fake identity and can regenerate it.
 
 ---
 
@@ -95,6 +100,22 @@ Keep "Block Wi-Fi / cell location" on, set random jitter to 2–5 m, and add tha
 
 **I want one app to keep the real location?**
 Settings → Exempt apps → enter package names (comma separated).
+
+---
+
+## 🔒 What privacy mode cannot do
+
+Privacy mode makes sure **ordinary apps get nothing that locates or identifies this phone**: Wi-Fi / cell / raw GNSS / Bluetooth scans come back empty; `ANDROID_ID`, `Build.getSerial()`, IMEI / MEID / IMSI / ICCID / line number return a fixed random identity; barometer events are dropped for scoped apps.
+
+What **no software can do**, so don't trust tools that claim otherwise:
+
+| Not possible | Why |
+|---|---|
+| Hide from the carrier | With a SIM inserted the network always knows which cell you are in; that happens between baseband and carrier, below any app-level hook. Airplane mode + no SIM is the only answer. |
+| Change your IP geolocation | Decided by the network path. Only routing traffic through a machine elsewhere changes it. |
+| Run on GrapheneOS | GrapheneOS has no root / Xposed (it would break verified boot). Its per-app permission, network and sensor toggles already cover most of this. |
+| Fake device model, OAID, accounts | Changing `Build.MODEL` etc. crashes apps or gets accounts banned; vendor ad IDs (OAID) go through proprietary services. |
+| Sensors / client-side IDs outside strong mode | Sensor events and some ID reads happen inside the app process; they are only covered for apps added to the scope. |
 
 ---
 

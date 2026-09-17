@@ -78,6 +78,37 @@ final class SpoofState {
         return bool(Keys.DEBUG_LOG, false);
     }
 
+    String str(String k, String def) {
+        refresh();
+        if (prefs == null) return def;
+        String s = prefs.getString(k, def);
+        return s == null || s.isEmpty() ? def : s;
+    }
+
+    /** Privacy hardening master switch – independent of whether location spoofing is started. */
+    boolean privacy() {
+        return bool(Keys.PRIVACY, false);
+    }
+
+    boolean idSpoof() {
+        return privacy() && bool(Keys.ID_SPOOF, true);
+    }
+
+    boolean stepFake() {
+        return bool(Keys.STEP_FAKE, false);
+    }
+
+    /** Which fake identifier a telephony/identity getter should return, by method name; null = leave alone. */
+    String fakeIdFor(String method) {
+        if (method.startsWith("getDeviceId") || method.startsWith("getImei")) return str(Keys.FAKE_IMEI, null);
+        if (method.startsWith("getMeid")) return str(Keys.FAKE_MEID, null);
+        if (method.startsWith("getSubscriberId")) return str(Keys.FAKE_IMSI, null);
+        if (method.startsWith("getIccSerialNumber") || method.startsWith("getSimSerialNumber")) return str(Keys.FAKE_ICCID, null);
+        if (method.startsWith("getLine1Number")) return str(Keys.FAKE_PHONE, null);
+        if (method.startsWith("getSerial")) return str(Keys.FAKE_SERIAL, null);
+        return null;
+    }
+
     boolean isExempt(String pkg) {
         if (pkg == null) return false;
         if (ALWAYS_EXEMPT.contains(pkg)) return true;

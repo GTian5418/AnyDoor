@@ -56,7 +56,86 @@ public final class Config {
         if (!p.contains(Keys.MOCK_NETWORK)) e.putBoolean(Keys.MOCK_NETWORK, true);
         if (!p.contains(Keys.APP_HOOK)) e.putBoolean(Keys.APP_HOOK, true);
         if (!p.contains(Keys.EXEMPT)) e.putString(Keys.EXEMPT, "");
+        if (!p.contains(Keys.STEPS)) e.putString(Keys.STEPS, "0");
+        if (!p.contains(Keys.STRIDE)) e.putString(Keys.STRIDE, "0.7");
+        if (!p.contains(Keys.STEP_FAKE)) e.putBoolean(Keys.STEP_FAKE, false);
+        if (!p.contains(Keys.PRIVACY)) e.putBoolean(Keys.PRIVACY, false);
+        if (!p.contains(Keys.ID_SPOOF)) e.putBoolean(Keys.ID_SPOOF, true);
+        if (!p.contains(Keys.BT_BLOCK)) e.putBoolean(Keys.BT_BLOCK, true);
+        if (!p.contains(Keys.SENSOR_BLOCK)) e.putBoolean(Keys.SENSOR_BLOCK, true);
         e.commit();
+        ensureIdentity(c, false);
+    }
+
+    /** Generate the fake device identity used by privacy mode (once, or again when regen is true). */
+    public static JSONObject ensureIdentity(Context c, boolean regen) {
+        SharedPreferences p = config(c);
+        if (regen || !p.contains(Keys.FAKE_IMEI)) {
+            Random r = new Random();
+            String tac = "86" + digits(r, 6);                       // TAC of a mainland-market phone
+            String imei14 = tac + digits(r, 6);
+            String[] mnc = {"00", "01", "11", "07", "03"};
+            String imsi = "460" + mnc[r.nextInt(mnc.length)] + digits(r, 10);
+            String iccid19 = "8986" + mnc[r.nextInt(mnc.length)] + digits(r, 13);
+            String[] prefix = {"133", "135", "136", "137", "138", "139", "150", "151", "152", "158", "159",
+                    "176", "177", "180", "181", "182", "185", "186", "187", "188", "189"};
+            p.edit()
+                    .putString(Keys.FAKE_IMEI, imei14 + luhn(imei14))
+                    .putString(Keys.FAKE_MEID, "A0" + hex(r, 12).toUpperCase())
+                    .putString(Keys.FAKE_IMSI, imsi)
+                    .putString(Keys.FAKE_ICCID, iccid19 + luhn(iccid19))
+                    .putString(Keys.FAKE_ANDROID_ID, hex(r, 16))
+                    .putString(Keys.FAKE_SERIAL, alnum(r, 16))
+                    .putString(Keys.FAKE_PHONE, prefix[r.nextInt(prefix.length)] + digits(r, 8))
+                    .commit();
+        }
+        return identity(c);
+    }
+
+    public static JSONObject identity(Context c) {
+        SharedPreferences p = config(c);
+        JSONObject o = new JSONObject();
+        try {
+            for (String k : new String[]{Keys.FAKE_IMEI, Keys.FAKE_MEID, Keys.FAKE_IMSI, Keys.FAKE_ICCID,
+                    Keys.FAKE_ANDROID_ID, Keys.FAKE_SERIAL, Keys.FAKE_PHONE}) o.put(k, p.getString(k, ""));
+        } catch (Exception ignored) {
+        }
+        return o;
+    }
+
+    private static String digits(Random r, int n) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) sb.append(r.nextInt(10));
+        return sb.toString();
+    }
+
+    private static String hex(Random r, int n) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) sb.append(Character.forDigit(r.nextInt(16), 16));
+        return sb.toString();
+    }
+
+    private static String alnum(Random r, int n) {
+        String cs = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) sb.append(cs.charAt(r.nextInt(cs.length())));
+        return sb.toString();
+    }
+
+    /** Luhn check digit for a numeric string. */
+    private static int luhn(String s) {
+        int sum = 0;
+        boolean dbl = true;
+        for (int i = s.length() - 1; i >= 0; i--) {
+            int d = s.charAt(i) - '0';
+            if (dbl) {
+                d *= 2;
+                if (d > 9) d -= 9;
+            }
+            sum += d;
+            dbl = !dbl;
+        }
+        return (10 - sum % 10) % 10;
     }
 
     public static double num(SharedPreferences p, String k, double def) {

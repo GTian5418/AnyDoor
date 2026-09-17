@@ -132,11 +132,11 @@ public class JsBridge {
         r = RootShell.run("ls /data/adb/lspd/cli >/dev/null 2>&1 && echo yes");
         if (r.out.contains("yes")) {
             r = RootShell.run("sh /data/adb/lspd/cli modules enable " + Keys.PKG + " 2>&1; "
-                    + "sh /data/adb/lspd/cli scope set " + Keys.PKG + " android/0 com.android.phone/0 " + Keys.PKG + "/0 2>&1");
+                    + "sh /data/adb/lspd/cli scope set " + Keys.PKG + " android/0 com.android.phone/0 com.android.bluetooth/0 " + Keys.PKG + "/0 2>&1");
             sb.append("Vector: ").append(r.out.isEmpty() ? r.err : r.out).append("\n");
-            sb.append("✓ 已启用模块并设置作用域 (system / phone)，重启手机后生效\n");
+            sb.append("✓ 已启用模块并设置作用域 (system / phone / bluetooth)，重启手机后生效\n");
         } else {
-            sb.append("· 未检测到 Vector CLI，请在 LSPosed 管理器里手动启用模块并勾选「系统框架」和「电话」\n");
+            sb.append("· 未检测到 Vector CLI，请在 LSPosed 管理器里手动启用模块并勾选「系统框架」「电话」「蓝牙」\n");
         }
         return sb.toString().trim();
     }
@@ -221,6 +221,97 @@ public class JsBridge {
     public void stopRoute() {
         SpoofService s = SpoofService.instance;
         if (s != null) s.stopRoute();
+    }
+
+    /** Road-following route through WGS-84 points. json: {"mode":"walking|running|bicycling|driving","points":[{lat,lng}]} */
+    @JavascriptInterface
+    public void planRoute(final int id, final String json) {
+        pool.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject o = new JSONObject(json);
+                    cb(id, Geocoder.route(o.optString("mode", "walking"), o.getJSONArray("points"),
+                            Config.app(act).getString(Keys.AMAP_KEY, "")));
+                } catch (Exception e) {
+                    cb(id, err(String.valueOf(e)));
+                }
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------ pedometer
+
+    private void withService(final Runnable r) {
+        SpoofService s = SpoofService.instance;
+        if (s != null) {
+            r.run();
+            return;
+        }
+        Intent i = new Intent(act, SpoofService.class).setAction(SpoofService.ACTION_START);
+        if (Build.VERSION.SDK_INT >= 26) act.startForegroundService(i);
+        else act.startService(i);
+        pool.submit(new Runnable() {
+            @Override
+            public void run() {
+                for (int n = 0; n < 20 && SpoofService.instance == null; n++) {
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+                if (SpoofService.instance != null) r.run();
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public void stepBurst(final double n, final double perMinute) {
+        withService(new Runnable() {
+            @Override
+            public void run() {
+                SpoofService s = SpoofService.instance;
+                if (s != null) s.stepBurst(n, perMinute);
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public void stopSteps() {
+        SpoofService s = SpoofService.instance;
+        if (s != null) s.stopSteps();
+    }
+
+    @JavascriptInterface
+    public void setSteps(double n) {
+        SpoofService s = SpoofService.instance;
+        if (s != null) s.setSteps(n);
+        else Config.config(act).edit().putString(Keys.STEPS, String.valueOf(Math.floor(Math.max(0, n)))).commit();
+    }
+
+    // ------------------------------------------------------------------ privacy
+
+    @JavascriptInterface
+    public String getIdentity() {
+        return Config.ensureIdentity(act, false).toString();
+    }
+
+    @JavascriptInterface
+    public String regenIdentity() {
+        return Config.ensureIdentity(act, true).toString();
+    }
+
+    /** One-click privacy preset: turn every shield on (or just the master switch off). */
+    @JavascriptInterface
+    public void privacyPreset(boolean on) {
+        SharedPreferences.Editor e = Config.config(act).edit().putBoolean(Keys.PRIVACY, on);
+        if (on) {
+            Config.ensureIdentity(act, false);
+            e.putBoolean(Keys.WIFI_BLOCK, true).putBoolean(Keys.CELL_BLOCK, true).putBoolean(Keys.GNSS_BLOCK, true)
+                    .putBoolean(Keys.ID_SPOOF, true).putBoolean(Keys.BT_BLOCK, true).putBoolean(Keys.SENSOR_BLOCK, true);
+            if (Config.num(Config.config(act), Keys.JITTER, 0) < 2) e.putString(Keys.JITTER, "3");
+        }
+        e.commit();
     }
 
     @JavascriptInterface

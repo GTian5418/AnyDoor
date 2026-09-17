@@ -54,13 +54,24 @@ public class SpoofService extends Service {
     private long lastTick;
 
     // route simulation
-    private double[][] route;
-    private double routeSpeed;
-    private boolean routeLoop;
+    private double[][] route;          // [i] = {lat, lng, stopFlag}
+    private double routeSpeed;         // target m/s
+    private String routeLoop = "none"; // none | loop | pingpong
+    private String routeMode = "walking";
+    private double routeVar;           // 0..1 fraction of random speed variation
+    private boolean routePause;        // random pauses at crossings
+    private double routeStride;        // meters per step, 0 = no steps
     private volatile boolean routeActive;
     private int routeSeg;
     private double routeOffset;
     private double routeTotal;
+    private double speedNoise;         // smoothed random walk in [-1, 1]
+    private long pauseUntil;           // elapsedRealtime ms
+    private final java.util.Random rnd = new java.util.Random();
+
+    // pedometer
+    private double stepsTotal;         // cumulative fake steps, persisted in config
+    private double burstLeft, burstRate;   // "add N steps at R steps/s" without moving
 
     // joystick
     private JoystickOverlay joystick;
@@ -120,6 +131,7 @@ public class SpoofService extends Service {
         SharedPreferences c = Config.config(this);
         baseLat = Config.num(c, Keys.LAT, 39.908722);
         baseLng = Config.num(c, Keys.LNG, 116.397499);
+        stepsTotal = Config.num(c, Keys.STEPS, 0);
         reloadParams(c);
         c.edit().putBoolean(Keys.STARTED, true).commit();
         startForeground(NOTIF_ID, buildNotification());
@@ -140,6 +152,7 @@ public class SpoofService extends Service {
     private void stopSpoof() {
         running = false;
         routeActive = false;
+        burstLeft = 0;
         ui.removeCallbacks(ticker);
         Config.config(this).edit().putBoolean(Keys.STARTED, false)
                 .putString(Keys.SPEED, "0").commit();
@@ -193,6 +206,9 @@ public class SpoofService extends Service {
                 baseLng = p[1];
                 speed = v;
                 moving = true;
+                // walking-speed joystick movement also counts steps
+                double stride = Config.num(c, Keys.STRIDE, 0.7);
+                if (v <= 4.5 && stride > 0) stepsTotal += v * dt / stride;
             } else if (routeActive) {
                 advanceRoute(dt);
                 moving = true;
@@ -200,6 +216,12 @@ public class SpoofService extends Service {
                 // UI (or another component) changed the target in prefs
                 baseLat = Config.num(c, Keys.LAT, baseLat);
                 baseLng = Config.num(c, Keys.LNG, baseLng);
+            }
+            if (burstLeft > 0) {
+                double add = Math.min(burstLeft, burstRate * dt);
+                stepsTotal += add;
+                burstLeft -= add;
+                moving = true;
             }
             if (moving) writeConfig(false);
             pushNow();
@@ -219,6 +241,7 @@ public class SpoofService extends Service {
         Config.config(this).edit()
                 .putString(Keys.LAT, fmt(baseLat)).putString(Keys.LNG, fmt(baseLng))
                 .putString(Keys.SPEED, fmt(speed)).putString(Keys.BEARING, fmt(bearing))
+                .putString(Keys.STEPS, fmt(Math.floor(stepsTotal)))
                 .commit();
     }
 
@@ -357,25 +380,36 @@ public class SpoofService extends Service {
 
     // ------------------------------------------------------------------ route
 
-    /** @param json {"points":[{"lat":..,"lng":..},...],"speed":m/s,"loop":bool} */
+    /**
+     * @param json {"points":[{"lat","lng","s"?}],"speed":m/s,"loop":"none|loop|pingpong"|bool,
+     *             "var":0..1,"pause":bool,"stride":m,"mode":"walking|running|bicycling|driving"}
+     */
     public boolean startRoute(String json) {
         try {
             JSONObject o = new JSONObject(json);
             JSONArray pts = o.getJSONArray("points");
             if (pts.length() < 2) return false;
-            double[][] r = new double[pts.length()][2];
+            double[][] r = new double[pts.length()][3];
             routeTotal = 0;
             for (int i = 0; i < pts.length(); i++) {
                 JSONObject p = pts.getJSONObject(i);
                 r[i][0] = p.getDouble("lat");
                 r[i][1] = p.getDouble("lng");
+                r[i][2] = p.optInt("s", 0);
                 if (i > 0) routeTotal += GeoMath.distance(r[i - 1][0], r[i - 1][1], r[i][0], r[i][1]);
             }
             route = r;
             routeSpeed = Math.max(0.1, o.optDouble("speed", 1.4));
-            routeLoop = o.optBoolean("loop", false);
+            Object loop = o.opt("loop");
+            routeLoop = loop instanceof Boolean ? (((Boolean) loop) ? "loop" : "none") : o.optString("loop", "none");
+            routeMode = o.optString("mode", "walking");
+            routeVar = Math.max(0, Math.min(1, o.optDouble("var", 0)));
+            routePause = o.optBoolean("pause", false);
+            routeStride = Math.max(0, o.optDouble("stride", 0));
             routeSeg = 0;
             routeOffset = 0;
+            speedNoise = 0;
+            pauseUntil = 0;
             baseLat = r[0][0];
             baseLng = r[0][1];
             bearing = GeoMath.bearing(r[0][0], r[0][1], r[1][0], r[1][1]);
@@ -404,28 +438,56 @@ public class SpoofService extends Service {
             routeActive = false;
             return;
         }
-        double remaining = routeSpeed * dt;
+        long now = SystemClock.elapsedRealtime();
+        if (pauseUntil > now) {
+            speed = 0;
+            return;
+        }
+        // Ornstein-Uhlenbeck style noise so the speed drifts smoothly instead of jumping
+        speedNoise += (-speedNoise * 0.2 + rnd.nextGaussian() * 0.45) * dt;
+        speedNoise = Math.max(-1, Math.min(1, speedNoise));
+        double v = routeSpeed * (1 + routeVar * speedNoise);
+        v = Math.max(routeSpeed * 0.25, v);
+        double remaining = v * dt;
+        double moved = 0;
         while (remaining > 0) {
             double[] a = r[routeSeg], b = r[routeSeg + 1];
             double segLen = GeoMath.distance(a[0], a[1], b[0], b[1]);
             double left = segLen - routeOffset;
             if (remaining < left) {
                 routeOffset += remaining;
+                moved += remaining;
                 remaining = 0;
             } else {
                 remaining -= left;
+                moved += left;
                 routeOffset = 0;
                 routeSeg++;
                 if (routeSeg >= r.length - 1) {
-                    if (routeLoop) {
+                    if ("loop".equals(routeLoop)) {
+                        routeSeg = 0;
+                    } else if ("pingpong".equals(routeLoop)) {
+                        double[][] rev = new double[r.length][];
+                        for (int i = 0; i < r.length; i++) rev[i] = r[r.length - 1 - i];
+                        route = r = rev;
                         routeSeg = 0;
                     } else {
                         baseLat = r[r.length - 1][0];
                         baseLng = r[r.length - 1][1];
                         routeActive = false;
                         speed = 0;
+                        countSteps(moved);
                         return;
                     }
+                    if (routePause) {
+                        pauseUntil = now + 3000 + rnd.nextInt(8000);
+                        remaining = 0;
+                    }
+                } else if (routePause && r[routeSeg][2] > 0 && rnd.nextDouble() < pauseChance()) {
+                    // stop at a crossing: red light for cars, a short wait for everybody else
+                    boolean car = "driving".equals(routeMode);
+                    pauseUntil = now + (car ? 5000 + rnd.nextInt(25000) : 1500 + rnd.nextInt(6000));
+                    remaining = 0;
                 }
             }
         }
@@ -434,7 +496,40 @@ public class SpoofService extends Service {
         double[] p = GeoMath.destination(a[0], a[1], bearing, routeOffset);
         baseLat = p[0];
         baseLng = p[1];
-        speed = routeSpeed;
+        speed = pauseUntil > now ? 0 : v;
+        countSteps(moved);
+    }
+
+    private double pauseChance() {
+        if ("driving".equals(routeMode)) return 0.35;
+        if ("bicycling".equals(routeMode)) return 0.2;
+        return 0.08;
+    }
+
+    private void countSteps(double meters) {
+        if (routeStride > 0 && meters > 0) stepsTotal += meters / routeStride;
+    }
+
+    // ------------------------------------------------------------------ pedometer
+
+    /** Add {@code n} steps over time at {@code perMinute} steps/min without moving. */
+    public void stepBurst(double n, double perMinute) {
+        burstLeft = Math.max(0, n);
+        burstRate = Math.max(1, perMinute) / 60.0;
+        if (!running) startSpoof();
+    }
+
+    public void stopSteps() {
+        burstLeft = 0;
+    }
+
+    public void setSteps(double n) {
+        stepsTotal = Math.max(0, n);
+        writeConfig(true);
+    }
+
+    public double steps() {
+        return stepsTotal;
     }
 
     // ------------------------------------------------------------------ joystick
@@ -498,6 +593,8 @@ public class SpoofService extends Service {
             o.put("curLat", p[0]).put("curLng", p[1]);
             o.put("speed", speed).put("bearing", bearing);
             o.put("routeActive", routeActive);
+            o.put("paused", routeActive && pauseUntil > SystemClock.elapsedRealtime());
+            o.put("steps", Math.floor(stepsTotal)).put("burstLeft", Math.ceil(burstLeft));
             if (route != null) {
                 double done = 0;
                 for (int i = 0; i < routeSeg && i < route.length - 1; i++)

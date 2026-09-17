@@ -164,4 +164,90 @@ public final class Geocoder {
         }
         return out;
     }
+
+    // ------------------------------------------------------------------ route planning
+
+    /**
+     * Plan a road-following route through the given WGS-84 points with Amap's direction API.
+     * Consecutive points are routed pairwise so every mode supports intermediate waypoints.
+     *
+     * @param mode walking | running | bicycling | driving (running uses the walking network)
+     * @return {ok, points:[{lat,lng,s}], distance, duration, error}; s=1 marks a turn / intersection
+     */
+    public static JSONObject route(String mode, JSONArray pts, String amapKey) {
+        JSONObject out = new JSONObject();
+        try {
+            if (pts == null || pts.length() < 2) throw new Exception("至少需要起点和终点");
+            if (amapKey == null || amapKey.trim().isEmpty()) throw new Exception("NO_KEY");
+            JSONArray points = new JSONArray();
+            double distance = 0, duration = 0;
+            for (int i = 1; i < pts.length(); i++) {
+                JSONObject a = pts.getJSONObject(i - 1), b = pts.getJSONObject(i);
+                double[] ga = GeoMath.wgs2gcj(a.getDouble("lat"), a.getDouble("lng"));
+                double[] gb = GeoMath.wgs2gcj(b.getDouble("lat"), b.getDouble("lng"));
+                String origin = String.format(java.util.Locale.US, "%.6f,%.6f", ga[1], ga[0]);
+                String dest = String.format(java.util.Locale.US, "%.6f,%.6f", gb[1], gb[0]);
+                JSONObject path = amapPath(mode, origin, dest, amapKey.trim());
+                distance += path.optDouble("distance", 0);
+                duration += path.optDouble("duration", 0);
+                JSONArray steps = path.optJSONArray("steps");
+                if (steps == null) continue;
+                for (int j = 0; j < steps.length(); j++) {
+                    String poly = steps.getJSONObject(j).optString("polyline", "");
+                    boolean first = true;
+                    for (String pair : poly.split(";")) {
+                        String[] ll = pair.split(",");
+                        if (ll.length != 2) continue;
+                        double[] w = GeoMath.gcj2wgs(Double.parseDouble(ll[1]), Double.parseDouble(ll[0]));
+                        if (points.length() > 0) {
+                            JSONObject last = points.getJSONObject(points.length() - 1);
+                            if (Math.abs(last.getDouble("lat") - w[0]) < 1e-7 && Math.abs(last.getDouble("lng") - w[1]) < 1e-7) {
+                                if (first) last.put("s", 1);
+                                first = false;
+                                continue;
+                            }
+                        }
+                        JSONObject o = new JSONObject().put("lat", w[0]).put("lng", w[1]);
+                        if (first) o.put("s", 1);   // start of an Amap step = a turn / crossing
+                        first = false;
+                        points.put(o);
+                    }
+                }
+            }
+            if (points.length() < 2) throw new Exception("未返回路径");
+            out.put("ok", true).put("points", points).put("distance", distance).put("duration", duration).put("mode", mode);
+        } catch (Exception e) {
+            try {
+                out.put("ok", false).put("error", e.getMessage() == null ? String.valueOf(e) : e.getMessage());
+            } catch (Exception ignored) {
+            }
+        }
+        return out;
+    }
+
+    /** One Amap direction request; returns the first path object {distance, duration, steps}. */
+    private static JSONObject amapPath(String mode, String origin, String dest, String key) throws Exception {
+        String url;
+        boolean v4 = false;
+        if ("bicycling".equals(mode)) {
+            url = "https://restapi.amap.com/v4/direction/bicycling?key=" + enc(key) + "&origin=" + origin + "&destination=" + dest;
+            v4 = true;
+        } else if ("driving".equals(mode)) {
+            url = "https://restapi.amap.com/v3/direction/driving?key=" + enc(key) + "&origin=" + origin + "&destination=" + dest
+                    + "&strategy=10&extensions=base&output=JSON";
+        } else {
+            url = "https://restapi.amap.com/v3/direction/walking?key=" + enc(key) + "&origin=" + origin + "&destination=" + dest + "&output=JSON";
+        }
+        JSONObject o = new JSONObject(http(url, 15000));
+        JSONArray paths;
+        if (v4) {
+            if (o.optInt("errcode", -1) != 0) throw new Exception(o.optString("errmsg", o.optString("errdetail", "请求失败")));
+            paths = o.getJSONObject("data").optJSONArray("paths");
+        } else {
+            if (!"1".equals(o.optString("status"))) throw new Exception(o.optString("info", "请求失败"));
+            paths = o.getJSONObject("route").optJSONArray("paths");
+        }
+        if (paths == null || paths.length() == 0) throw new Exception("该起终点之间没有可用路径");
+        return paths.getJSONObject(0);
+    }
 }

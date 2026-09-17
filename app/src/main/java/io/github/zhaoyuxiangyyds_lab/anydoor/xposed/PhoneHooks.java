@@ -45,5 +45,26 @@ final class PhoneHooks {
             }
         }
         HookEntry.log("phone hooks installed: " + n);
+
+        // ---- privacy mode: IMEI / MEID / IMSI / ICCID / phone number for normal apps ----
+        XC_MethodHook fakeId = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                // apps that are not allowed to read identifiers keep getting their SecurityException / null
+                if (p.getThrowable() != null || p.getResult() == null || !st.idSpoof()) return;
+                int uid = android.os.Binder.getCallingUid();
+                if (HookUtil.isSystemUid(uid)) return;
+                String pkg = HookUtil.callerPackage(p.thisObject, p.args, uid);
+                if (HookUtil.isInfraPackage(pkg) || st.isExempt(pkg)) return;
+                String fake = st.fakeIdFor(((Method) p.method).getName());
+                if (fake != null) p.setResult(fake);
+            }
+        };
+        String[] prefixes = {"getDeviceId", "getImei", "getMeid", "getSubscriberId", "getIccSerialNumber", "getLine1Number"};
+        int m = 0;
+        for (Class<?> c : targets) m += HookUtil.hookByPrefix(c, prefixes, fakeId);
+        Class<?> subInfo = XposedHelpers.findClassIfExists("com.android.internal.telephony.PhoneSubInfoController", cl);
+        if (subInfo != null) m += HookUtil.hookByPrefix(subInfo, prefixes, fakeId);
+        HookEntry.log("identity hooks installed: " + m);
     }
 }
