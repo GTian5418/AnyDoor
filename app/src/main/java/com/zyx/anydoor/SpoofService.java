@@ -289,10 +289,7 @@ public class SpoofService extends Service {
                     lm.removeTestProvider(p);
                 } catch (Throwable ignored) {
                 }
-                boolean gps = LocationManager.GPS_PROVIDER.equals(p);
-                lm.addTestProvider(p, !gps, gps, !gps, false, true, true, true,
-                        gps ? Criteria.POWER_HIGH : Criteria.POWER_MEDIUM,
-                        gps ? Criteria.ACCURACY_FINE : Criteria.ACCURACY_COARSE);
+                addOneProvider(p, LocationManager.GPS_PROVIDER.equals(p));
                 lm.setTestProviderEnabled(p, true);
                 mockError = "";
             } catch (Throwable t) {
@@ -309,6 +306,42 @@ public class SpoofService extends Service {
                 pushNow();
             }
         });
+    }
+
+    /**
+     * Register one test provider. Android 12+ (API 31) deprecated the multi-boolean signature in
+     * favor of addTestProvider(String, ProviderProperties); on Android 15/16 we use that via
+     * reflection, falling back to the legacy call on Android 8–11.
+     */
+    private void addOneProvider(String name, boolean gps) throws Exception {
+        if (Build.VERSION.SDK_INT >= 31) {
+            try {
+                Class<?> ppc = Class.forName("android.location.provider.ProviderProperties");
+                Class<?> bc = Class.forName("android.location.provider.ProviderProperties$Builder");
+                Object b = bc.getConstructor().newInstance();
+                setBool(bc, b, "setHasNetworkRequirement", !gps);
+                setBool(bc, b, "setHasSatelliteRequirement", gps);
+                setBool(bc, b, "setHasCellRequirement", false);
+                setBool(bc, b, "setHasMonetaryCost", false);
+                setBool(bc, b, "setHasAltitudeSupport", true);
+                setBool(bc, b, "setHasSpeedSupport", true);
+                setBool(bc, b, "setHasBearingSupport", true);
+                bc.getMethod("setPowerUsage", int.class).invoke(b, gps ? 3 : 2);   // HIGH / MEDIUM
+                bc.getMethod("setAccuracy", int.class).invoke(b, gps ? 1 : 2);     // FINE / COARSE
+                Object props = bc.getMethod("build").invoke(b);
+                LocationManager.class.getMethod("addTestProvider", String.class, ppc).invoke(lm, name, props);
+                return;
+            } catch (Throwable t) {
+                Log.w(TAG, "modern addTestProvider failed, falling back: " + t);
+            }
+        }
+        lm.addTestProvider(name, !gps, gps, !gps, false, true, true, true,
+                gps ? Criteria.POWER_HIGH : Criteria.POWER_MEDIUM,
+                gps ? Criteria.ACCURACY_FINE : Criteria.ACCURACY_COARSE);
+    }
+
+    private static void setBool(Class<?> cls, Object obj, String method, boolean v) throws Exception {
+        cls.getMethod(method, boolean.class).invoke(obj, v);
     }
 
     private void removeProviders() {

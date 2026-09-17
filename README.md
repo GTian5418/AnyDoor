@@ -32,7 +32,7 @@
 
 | 项目 | 要求 |
 |------|------|
-| 系统 | Android 8.1 ~ 14（SDK 27+），已在 **华为 EMUI 9 / Android 9** 实测通过 |
+| 系统 | Android 8.1 ~ 16（SDK 27+）。已在 **华为 EMUI 9 / Android 9** 真机实测通过；Android 12 ~ 16 定位架构一致，代码已做向前兼容（测试定位源在 API 31+ 使用 `ProviderProperties` 新接口），预期可用但尚未在 15/16 真机验证 |
 | Root | 需要 Root |
 | Xposed 框架 | **LSPosed** / **Vector**(JingMatrix) 等任意 Xposed 框架 |
 | 架构 | 纯 Java，无 native，各架构通用 |
