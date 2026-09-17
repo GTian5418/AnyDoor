@@ -9,6 +9,7 @@ import android.location.Location;
 import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
@@ -89,7 +90,15 @@ public class JsBridge {
             RootShell.Result ap = RootShell.run("appops get " + Keys.PKG + " android:mock_location");
             o.put("mockAllowed", ap.out.contains("allow"));
             o.put("overlay", Settings.canDrawOverlays(act));
-            o.put("systemHook", probeSystemHook());
+            Bundle probe = probeSystemHook();
+            o.put("systemHook", probe != null);
+            if (probe != null) {
+                o.put("sysPrefs", probe.getBoolean("prefs", false));
+                o.put("sysStarted", probe.getBoolean("started", false));
+                o.put("sysSdk", probe.getInt("sdk", 0));
+                o.put("sysHooks", probe.getString("hooks", ""));
+            }
+            o.put("started", Config.config(act).getBoolean(Keys.STARTED, false));
             RootShell.Result cli = RootShell.run("ls /data/adb/lspd/cli >/dev/null 2>&1 && echo yes");
             o.put("vectorCli", cli.out.contains("yes"));
             if (cli.out.contains("yes")) {
@@ -110,15 +119,19 @@ public class JsBridge {
         return o.toString();
     }
 
-    /** Ask the system for a provider that only exists inside our system_server hook. */
-    private boolean probeSystemHook() {
+    /**
+     * Ask the system for a provider that only exists inside our system_server hook. Returns the
+     * diagnostics bundle the hook attaches (never null when the hook answered), or null.
+     */
+    private Bundle probeSystemHook() {
         try {
             LocationManager lm = (LocationManager) act.getSystemService(Context.LOCATION_SERVICE);
             Location l = lm.getLastKnownLocation(Keys.PROBE_PROVIDER);
-            return l != null && Keys.PROBE_PROVIDER.equals(l.getProvider());
+            if (l == null || !Keys.PROBE_PROVIDER.equals(l.getProvider())) return null;
+            return l.getExtras() != null ? l.getExtras() : new Bundle();
         } catch (Throwable t) {
             log("probe: " + t);
-            return false;
+            return null;
         }
     }
 

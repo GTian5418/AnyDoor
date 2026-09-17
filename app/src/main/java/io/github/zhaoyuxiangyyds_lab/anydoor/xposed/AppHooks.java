@@ -54,12 +54,12 @@ final class AppHooks {
         };
         HookUtil.hookAll(loc, "isFromMockProvider", notMock);
         if (android.os.Build.VERSION.SDK_INT >= 31) HookUtil.hookAll(loc, "isMock", notMock);
-        HookUtil.hookAll(loc, "hasAltitude", new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam p) {
-                if (st.started()) p.setResult(true);
-            }
-        });
+        // Do NOT hook hasAltitude()/hasSpeed()/hasBearing()/hasAccuracy(): on Android 12+ both
+        // Location.writeToParcel and Location.CREATOR consult them to decide which fields are in
+        // the parcel. Forcing a different answer in only one of the two sides (the other may run
+        // in another process, or have the tiny getter inlined by AOT) shifts every byte that
+        // follows – Amap's AMapLocation then reads garbage lat/lng and fails with
+        // "LatLng is error#0802".
 
         // ---- LocationManager ----
         Class<?> lm = LocationManager.class;
@@ -341,11 +341,18 @@ final class AppHooks {
         }
     }
 
+    /** Only fixes that came from the platform are rewritten; apps build their own Location objects for maths. */
+    private static boolean isSystemFix(Object o) {
+        if (!(o instanceof Location)) return false;
+        String p = ((Location) o).getProvider();
+        return "gps".equals(p) || "network".equals(p) || "fused".equals(p) || "passive".equals(p);
+    }
+
     private static void hookGetter(Class<?> cls, String name, final SpoofState st, final String pkg, final int what) {
         HookUtil.hookAll(cls, name, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam p) {
-                if (!st.started()) return;
+                if (!st.started() || !isSystemFix(p.thisObject)) return;
                 SpoofState.Fix f = st.current();
                 switch (what) {
                     case 0: p.setResult(f.lat); break;

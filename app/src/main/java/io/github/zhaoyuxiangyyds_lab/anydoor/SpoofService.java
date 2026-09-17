@@ -12,6 +12,7 @@ import android.location.Criteria;
 import android.location.Location;
 import android.location.LocationManager;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -279,6 +280,14 @@ public class SpoofService extends Service {
                 l.setVerticalAccuracyMeters(3f);
                 l.setSpeedAccuracyMetersPerSecond(0.5f);
                 l.setBearingAccuracyDegrees(speed > 0.3 ? 10f : 90f);
+            }
+            // real GNSS fixes carry satellites/maxCn0/meanCn0; SDKs treat a gps fix without them as mocked
+            if (LocationManager.GPS_PROVIDER.equals(provider)) {
+                Bundle extras = new Bundle();
+                extras.putInt("satellites", 9 + (int) ((System.currentTimeMillis() / 20000L) % 7));
+                extras.putFloat("maxCn0", 41f);
+                extras.putFloat("meanCn0", 29f);
+                l.setExtras(extras);
             }
             lm.setTestProviderLocation(provider, l);
             mockError = "";

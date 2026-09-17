@@ -110,6 +110,10 @@
 
 **Q：显示「模拟中」但 App 位置没变？**
 到「环境检查」确认「系统框架 Hook」为 ✓。若为 ✕，说明作用域没选「系统框架」或没重启，按上面第 2、3 步重来。
+1.3.1 起环境检查多了一项「系统侧读取配置」——它是 `system_server` 自己汇报回来的：能不能读到配置文件、有没有读到「模拟中」，底部还列出各个 hook 的命中数（`last / report / accept / wifi`）。反馈问题时请把这一屏截图发出来。
+
+**Q：高德地图 / 微信 / 用高德 SDK 的 App 一直拿不到模拟位置，或报 `errorCode=8`、`LatLng is error#0802`？**
+请升级到 1.3.1 并重启一次手机。旧版有两个问题：① 伪造的 GPS 定位没带 `satellites` 卫星数，高德/百度/腾讯 SDK 会把这种「gps 定位」直接判定为模拟并丢弃；② 强化模式下 hook 了 `Location.hasAltitude()`，在 Android 12+ 上会打乱 `Location` 的 Parcel 布局，高德 `AMapLocation` 反序列化后经纬度变成乱码（就是 #0802）。另外 Android 11+ 的 WiFi 服务在单独的 APEX 类加载器里，旧版根本没 hook 到，WiFi 定位会泄露真实位置——1.3.1 已修。
 
 **Q：搜索地点报 `INVALID_USER_KEY` / 搜不出来？**
 高德 Key 类型不对。必须是「**Web服务**」类型，重新申请一个填入。
@@ -174,9 +178,9 @@ bash build.sh
 
 | 层 | 说明 |
 |----|------|
-| **系统层**（`SystemHooks`） | hook `LocationManagerService.getLastLocation` 与定位下发路径（`callLocationChangedLocked` / `onReportLocation`），把所有 App 的定位替换为目标坐标，构造全新 `Location`（不带 mock 标记）。可选屏蔽 WiFi / 基站 / GNSS。 |
+| **系统层**（`SystemHooks`） | hook `LocationManagerService.getLastLocation` 与定位下发路径（Android ≤ 11：`Receiver.callLocationChangedLocked`；Android 12+：`LocationProviderManager.onReportLocation` + 每个注册的 `acceptLocationChange` 兜底），把所有 App 的定位替换为目标坐标，构造全新 `Location`（不带 mock 标记，gps 定位附带 `satellites / maxCn0 / meanCn0`，否则定位 SDK 会当成模拟）。可选屏蔽 WiFi（Android 11+ 通过 `SystemServiceManager.startService` 抓到 wifi APEX 的类加载器）/ 基站 / GNSS。 |
 | **电话层**（`PhoneHooks`） | hook `PhoneInterfaceManager`，对普通 App 隐藏基站信息。 |
-| **应用层**（`AppHooks`） | 对加入作用域的 App 额外 hook `Location` getter、`isFromMockProvider`、`getLastKnownLocation` 等，二次兜底。 |
+| **应用层**（`AppHooks`） | 对加入作用域的 App 额外 hook `Location` getter（仅 gps/network/fused/passive 来源）、`isFromMockProvider`、`getLastKnownLocation` 等，二次兜底。不 hook `hasAltitude()` 之类决定 Parcel 布局的方法。 |
 | **驱动**（`SpoofService`） | 前台服务，用 `addTestProvider` + `setTestProviderLocation` 持续推送坐标，实现路线移动、摇杆、随机漂移；室内无信号也有定位。 |
 | **配置** | 通过 `xposedsharedprefs` 世界可读的 SharedPreferences 在 App 与 Hook 间共享。 |
 | **界面** | `WebView` 承载单页应用（`assets/web/`），`JsBridge` 做 JS↔Java 桥接；地图用 Leaflet + 高德瓦片。 |

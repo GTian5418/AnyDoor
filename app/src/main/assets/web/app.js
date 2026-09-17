@@ -793,11 +793,21 @@ async function renderEnv() {
     ['Xposed 框架模块', e.moduleActive, e.moduleActive ? '模块已被框架加载' : '未激活，请在 LSPosed/Vector 中启用并重启'],
     ['系统框架 Hook', e.systemHook, e.systemHook ? '系统服务已注入，全局生效' : '未检测到 · 需勾选作用域「android」并重启一次'],
     ['配置可被读取', e.prefsWorldReadable, e.prefsWorldReadable ? '世界可读，Hook 能读到设置' : '不可读 · 需在模块设置里开启「使用共享偏好」'],
-    ['模拟位置权限', e.mockAllowed, e.mockAllowed ? '已授予' : '未授予（点下方一键配置）'],
-    ['悬浮窗权限', e.overlay, e.overlay ? '已授予（摇杆可用）' : '未授予，摇杆不可用'],
   ];
+  // what system_server itself reports back through the probe (only meaningful once the hook answered)
+  if (e.systemHook) {
+    const sysOk = !!e.sysPrefs && (!e.started || !!e.sysStarted);
+    let d;
+    if (!e.sysPrefs) d = '系统服务读不到本应用的配置文件 · 框架的「共享偏好」支持异常，请更新 LSPosed/Vector 后重启';
+    else if (e.started && !e.sysStarted) d = '本应用已开始模拟，但系统服务读到的仍是「未开始」· 试试停止再开始，或重启手机';
+    else d = e.started ? '系统服务已读到「模拟中」' : '系统服务能读到配置（当前未开始模拟）';
+    items.push(['系统侧读取配置', sysOk, d]);
+  }
+  items.push(['模拟位置权限', e.mockAllowed, e.mockAllowed ? '已授予' : '未授予（点下方一键配置）']);
+  items.push(['悬浮窗权限', e.overlay, e.overlay ? '已授予（摇杆可用）' : '未授予，摇杆不可用']);
   items.forEach(([n, ok, d]) => box.appendChild(envItem(n, ok ? 'ok' : (n.includes('悬浮') ? 'warn' : 'bad'), d)));
-  const dev = el('div', 'card muted small'); dev.textContent = e.device + ' · SDK ' + e.sdk + (e.scope ? '\n作用域: ' + e.scope.replace(/\s+/g, ' ') : '');
+  const dev = el('div', 'card muted small'); dev.textContent = e.device + ' · SDK ' + e.sdk + (e.scope ? '\n作用域: ' + e.scope.replace(/\s+/g, ' ') : '')
+    + (e.sysHooks ? '\n系统 Hook: ' + e.sysHooks : '');
   dev.style.whiteSpace = 'pre-wrap'; box.appendChild(dev);
   if (e.mockError) { const m = el('div', 'card small'); m.style.color = 'var(--bad)'; m.textContent = '测试定位源错误：' + e.mockError; box.appendChild(m); }
   // drawer status summary

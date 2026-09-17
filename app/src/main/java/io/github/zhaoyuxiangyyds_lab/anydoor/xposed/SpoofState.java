@@ -1,6 +1,7 @@
 package io.github.zhaoyuxiangyyds_lab.anydoor.xposed;
 
 import android.location.Location;
+import android.os.Bundle;
 import android.os.SystemClock;
 
 import io.github.zhaoyuxiangyyds_lab.anydoor.GeoMath;
@@ -49,6 +50,12 @@ final class SpoofState {
     boolean started() {
         refresh();
         return prefs != null && prefs.getBoolean(Keys.STARTED, false);
+    }
+
+    /** Whether this process can actually read the module's config file. */
+    boolean prefsReadable() {
+        refresh();
+        return prefs != null && available;
     }
 
     boolean bool(String k, boolean def) {
@@ -147,7 +154,8 @@ final class SpoofState {
     /** Build a fresh, non-mock Location. */
     Location build(String provider, Location orig) {
         Fix f = current();
-        Location l = new Location(provider == null ? "gps" : provider);
+        String prov = provider == null ? "gps" : provider;
+        Location l = new Location(prov);
         l.setLatitude(f.lat);
         l.setLongitude(f.lng);
         l.setAltitude(f.alt);
@@ -162,7 +170,37 @@ final class SpoofState {
             l.setBearingAccuracyDegrees(f.speed > 0.3f ? 10f : 90f);
         } catch (Throwable ignored) {
         }
+        // Never copy the original extras: fused fixes carry "noGPSLocation" (the real network
+        // position) and other provider-private data. Only a real GNSS fix's satellite info is
+        // reproduced, because location SDKs (Amap, Baidu, Tencent) treat a "gps" fix without
+        // extras.satellites > 0 as a mocked location and silently drop it.
+        if ("gps".equals(prov)) l.setExtras(gpsExtras(orig));
         return l;
+    }
+
+    /**
+     * satellites / maxCn0 / meanCn0 as GnssLocationProvider attaches them to every real fix. The
+     * count drifts slowly with time so it looks like a live receiver, and never drops below 6.
+     */
+    static Bundle gpsExtras(Location orig) {
+        Bundle b = new Bundle();
+        int sats = 0;
+        if (orig != null && orig.getExtras() != null) {
+            try {
+                sats = orig.getExtras().getInt("satellites", 0);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (sats < 6) {
+            long bucket = System.currentTimeMillis() / 20000L;
+            long h = bucket * 0x9E3779B97F4A7C15L;
+            h ^= (h >>> 29);
+            sats = 9 + (int) ((h >>> 3) & 7);          // 9..16
+        }
+        b.putInt("satellites", sats);
+        b.putFloat("maxCn0", 38f + (sats % 5) * 1.5f);  // dB-Hz, typical open-sky values
+        b.putFloat("meanCn0", 26f + (sats % 4) * 1.25f);
+        return b;
     }
 
     static final class Fix {

@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 
@@ -30,6 +31,10 @@ final class SystemHooks {
     private static final int EVENT_CELL_LOCATION_CHANGED = 5;
     private static final int EVENT_CELL_INFO_CHANGED = 11;
 
+    /** Hook counts, reported back to the app through the probe provider (see LastLocationHook). */
+    private static volatile int lastHooks, deliverHooks, reportHooks, acceptHooks;
+    private static volatile String wifiState = "none";
+
     static void install(XC_LoadPackage.LoadPackageParam lp, final SpoofState st) {
         ClassLoader cl = lp.classLoader;
 
@@ -49,19 +54,26 @@ final class SystemHooks {
             }
             int n = 0;
             for (Class<?> c : targets) n += HookUtil.hookAll(c, "getLastLocation", new LastLocationHook(st));
+            lastHooks = n;
             HookEntry.log("getLastLocation hooks: " + n + " on " + targets.size() + " classes");
 
             // Android 8.1 - 11: per-receiver delivery
             Class<?> recv = XposedHelpers.findClassIfExists(lms.getName() + "$Receiver", cl);
             if (recv != null) {
-                HookEntry.log("Receiver.callLocationChangedLocked hooks: "
-                        + HookUtil.hookAll(recv, "callLocationChangedLocked", new DeliverHook(st)));
+                deliverHooks = HookUtil.hookAll(recv, "callLocationChangedLocked", new DeliverHook(st));
+                HookEntry.log("Receiver.callLocationChangedLocked hooks: " + deliverHooks);
             }
-            // Android 12+: provider report path
+            // Android 12+: provider report path (replaces the result for every listener and the
+            // last-location cache) ...
             Class<?> lpm = XposedHelpers.findClassIfExists("com.android.server.location.provider.LocationProviderManager", cl);
             if (lpm != null) {
-                HookEntry.log("LocationProviderManager.onReportLocation hooks: "
-                        + HookUtil.hookAll(lpm, "onReportLocation", new ReportHook(st)));
+                reportHooks = HookUtil.hookAll(lpm, "onReportLocation", new ReportHook(st));
+                HookEntry.log("LocationProviderManager.onReportLocation hooks: " + reportHooks);
+                // ... plus the per-registration delivery point as a safety net: it also covers the
+                // "deliver cached last location on register" fast path and OEM builds where the
+                // report path is bypassed, and it honours the exempt list per package.
+                acceptHooks = installAcceptHooks(lpm, st);
+                HookEntry.log("Registration.acceptLocationChange hooks: " + acceptHooks);
             }
             // raw GNSS data would reveal the real position
             XC_MethodHook deny = new XC_MethodHook() {
@@ -81,44 +93,38 @@ final class SystemHooks {
         }
 
         // ---------- WiFi ----------
+        // Up to Android 10 WifiServiceImpl lives in services.jar; since Android 11 it is in the
+        // com.android.wifi APEX, loaded by SystemServiceManager.startServiceFromJar() through a
+        // separate PathClassLoader that lp.classLoader cannot see. Catch the class when the
+        // service is started.
         Class<?> wifi = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", cl);
         if (wifi != null) {
-            HookUtil.hookAll(wifi, "getScanResults", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam p) {
-                    if (!shouldBlock(st, p.thisObject, p.args, Keys.WIFI_BLOCK)) return;
-                    Object res = p.getResult();
-                    if (res == null) return;
-                    try {
-                        if (res instanceof List) p.setResult(new ArrayList<>());
-                        else p.setResult(XposedHelpers.newInstance(res.getClass(), new ArrayList<>()));
-                    } catch (Throwable t) {
-                        HookEntry.log("getScanResults replace failed: " + t);
-                    }
-                }
-            });
-            HookUtil.hookAll(wifi, "getConnectionInfo", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam p) {
-                    if (!shouldBlock(st, p.thisObject, p.args, Keys.WIFI_BLOCK)) return;
-                    Object w = p.getResult();
-                    if (w == null) return;
-                    try {
-                        Object copy = XposedHelpers.newInstance(w.getClass(), w);
-                        XposedHelpers.callMethod(copy, "setBSSID", "02:00:00:00:00:00");
-                        try {
-                            XposedHelpers.callMethod(copy, "setMacAddress", "02:00:00:00:00:00");
-                        } catch (Throwable ignored) {
-                        }
-                        if (st.privacy()) hideSsid(copy);
-                        p.setResult(copy);
-                    } catch (Throwable t) {
-                        HookEntry.log("getConnectionInfo mask failed: " + t);
-                    }
-                }
-            });
+            installWifiHooks(wifi, st);
         } else {
-            HookEntry.log("WifiServiceImpl not in system_server (separate wifi process?)");
+            wifiState = "waiting";
+            Class<?> ssm = XposedHelpers.findClassIfExists("com.android.server.SystemServiceManager", cl);
+            int k = ssm == null ? 0 : HookUtil.hookAll(ssm, "startService", new XC_MethodHook() {
+                private boolean done;
+
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    if (done || p.args.length == 0 || p.args[0] == null) return;
+                    Class<?> c = p.args[0] instanceof Class ? (Class<?>) p.args[0] : p.args[0].getClass();
+                    if (!"com.android.server.wifi.WifiService".equals(c.getName())) return;
+                    done = true;
+                    Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", c.getClassLoader());
+                    if (impl == null) {
+                        wifiState = "impl-missing";
+                        HookEntry.log("WifiService loaded but WifiServiceImpl not found in " + c.getClassLoader());
+                        return;
+                    }
+                    installWifiHooks(impl, st);
+                }
+            });
+            if (k == 0) {
+                wifiState = "no-loader";
+                HookEntry.log("WifiServiceImpl not in system_server and SystemServiceManager.startService not hookable");
+            }
         }
 
         // ---------- TelephonyRegistry: strip cell events from PhoneStateListener registrations ----------
@@ -147,6 +153,91 @@ final class SystemHooks {
         }
         installIdentityHooks(cl, st);
         HookEntry.log("system hooks installed (sdk " + android.os.Build.VERSION.SDK_INT + ")");
+    }
+
+    /** getScanResults → empty, getConnectionInfo → BSSID masked, for non-exempt normal apps. */
+    private static void installWifiHooks(Class<?> wifi, final SpoofState st) {
+        int n = 0;
+        n += HookUtil.hookAll(wifi, "getScanResults", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (!shouldBlock(st, p.thisObject, p.args, Keys.WIFI_BLOCK)) return;
+                Object res = p.getResult();
+                if (res == null) return;
+                try {
+                    if (res instanceof List) p.setResult(new ArrayList<>());
+                    else p.setResult(XposedHelpers.newInstance(res.getClass(), new ArrayList<>()));
+                } catch (Throwable t) {
+                    HookEntry.log("getScanResults replace failed: " + t);
+                }
+            }
+        });
+        n += HookUtil.hookAll(wifi, "getConnectionInfo", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (!shouldBlock(st, p.thisObject, p.args, Keys.WIFI_BLOCK)) return;
+                Object w = p.getResult();
+                if (w == null) return;
+                try {
+                    Object copy = XposedHelpers.newInstance(w.getClass(), w);
+                    XposedHelpers.callMethod(copy, "setBSSID", "02:00:00:00:00:00");
+                    try {
+                        XposedHelpers.callMethod(copy, "setMacAddress", "02:00:00:00:00:00");
+                    } catch (Throwable ignored) {
+                    }
+                    if (st.privacy()) hideSsid(copy);
+                    p.setResult(copy);
+                } catch (Throwable t) {
+                    HookEntry.log("getConnectionInfo mask failed: " + t);
+                }
+            }
+        });
+        wifiState = n > 0 ? "ok" : "no-methods";
+        HookEntry.log("wifi hooks installed: " + n + " via " + wifi.getClassLoader());
+    }
+
+    /**
+     * Android 12+: every delivery goes through Registration.acceptLocationChange(LocationResult) of
+     * one of LocationProviderManager's nested registration classes. Hook each class that declares it.
+     */
+    private static int installAcceptHooks(Class<?> lpm, SpoofState st) {
+        int n = 0;
+        AcceptHook hook = new AcceptHook(st);
+        try {
+            // getDeclaredClasses() needs the dex MemberClasses annotation, which some OEM builds
+            // strip – so also try the AOSP names directly.
+            java.util.LinkedHashSet<Class<?>> classes = new java.util.LinkedHashSet<>();
+            try {
+                classes.addAll(java.util.Arrays.asList(lpm.getDeclaredClasses()));
+            } catch (Throwable ignored) {
+            }
+            for (String n2 : new String[]{"LocationRegistration", "LocationListenerRegistration",
+                    "LocationPendingIntentRegistration", "GetCurrentLocationListenerRegistration"}) {
+                Class<?> c = XposedHelpers.findClassIfExists(lpm.getName() + "$" + n2, lpm.getClassLoader());
+                if (c != null) classes.add(c);
+            }
+            for (Class<?> inner : classes) {
+                for (java.lang.reflect.Method m : inner.getDeclaredMethods()) {
+                    if (!m.getName().equals("acceptLocationChange")
+                            || java.lang.reflect.Modifier.isAbstract(m.getModifiers())) continue;
+                    try {
+                        de.robv.android.xposed.XposedBridge.hookMethod(m, hook);
+                        n++;
+                    } catch (Throwable t) {
+                        HookEntry.log("hook " + inner.getSimpleName() + ".acceptLocationChange failed: " + t);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            HookEntry.log("acceptLocationChange hooks failed: " + t);
+        }
+        return n;
+    }
+
+    /** Summary of what got hooked, for the app's environment check. */
+    static String hookSummary() {
+        return "last=" + lastHooks + " deliver=" + deliverHooks + " report=" + reportHooks
+                + " accept=" + acceptHooks + " wifi=" + wifiState;
     }
 
     /** SSID → <unknown ssid>, network id → -1 on a WifiInfo copy (privacy mode). */
@@ -245,9 +336,17 @@ final class SystemHooks {
         @Override
         protected void afterHookedMethod(MethodHookParam p) {
             String provider = requestedProvider(p.args);
-            // liveness probe from our own app, works even when spoofing is off
+            // liveness probe from our own app, works even when spoofing is off; the extras tell
+            // the app what system_server actually sees (config readable? started? which hooks?)
             if (Keys.PROBE_PROVIDER.equals(provider)) {
-                p.setResult(st.build(Keys.PROBE_PROVIDER, null));
+                Location probe = st.build(Keys.PROBE_PROVIDER, null);
+                Bundle b = new Bundle();
+                b.putBoolean("prefs", st.prefsReadable());
+                b.putBoolean("started", st.started());
+                b.putInt("sdk", Build.VERSION.SDK_INT);
+                b.putString("hooks", hookSummary());
+                probe.setExtras(b);
+                p.setResult(probe);
                 return;
             }
             if (!st.started()) return;
@@ -328,43 +427,106 @@ final class SystemHooks {
         }
     }
 
+    /** Spoofed LocationResult of the same class as {@code lr}; null if it cannot be built. */
+    static Object spoofResult(SpoofState st, Object lr, Object manager) {
+        try {
+            Location first = null;
+            try {
+                first = (Location) XposedHelpers.callMethod(lr, "getLastLocation");
+            } catch (Throwable ignored) {
+            }
+            String provider = first != null ? first.getProvider() : null;
+            if (provider == null && manager != null) {
+                try {
+                    provider = (String) XposedHelpers.getObjectField(manager, "mName");
+                } catch (Throwable ignored) {
+                }
+            }
+            Location fake = st.build(provider == null ? "gps" : provider, first);
+            try {
+                return XposedHelpers.callStaticMethod(lr.getClass(), "wrap", (Object) new Location[]{fake});
+            } catch (Throwable t) {
+                List<Location> l = new ArrayList<>();
+                l.add(fake);
+                return XposedHelpers.callStaticMethod(lr.getClass(), "create", l);
+            }
+        } catch (Throwable t) {
+            HookEntry.log("LocationResult replace failed: " + t);
+            return null;
+        }
+    }
+
     /** Android 12+: LocationProviderManager.onReportLocation(LocationResult) → replace the whole result. */
     static final class ReportHook extends XC_MethodHook {
+        /** depth of spoofed onReportLocation frames on this thread; deliveries inside are already spoofed */
+        private static final ThreadLocal<int[]> DEPTH = new ThreadLocal<>();
         private final SpoofState st;
 
         ReportHook(SpoofState st) {
             this.st = st;
         }
 
+        static boolean inside() {
+            int[] d = DEPTH.get();
+            return d != null && d[0] > 0;
+        }
+
+        private static void enter(int delta) {
+            int[] d = DEPTH.get();
+            if (d == null) DEPTH.set(d = new int[1]);
+            d[0] = Math.max(0, d[0] + delta);
+        }
+
         @Override
         protected void beforeHookedMethod(MethodHookParam p) {
             if (!st.started() || p.args.length == 0 || p.args[0] == null) return;
-            Object lr = p.args[0];
+            Object replaced = spoofResult(st, p.args[0], p.thisObject);
+            if (replaced == null) return;
+            p.args[0] = replaced;
+            p.setObjectExtra("anydoor", Boolean.TRUE);
+            enter(+1);
+        }
+
+        @Override
+        protected void afterHookedMethod(MethodHookParam p) {
+            if (p.getObjectExtra("anydoor") != null) enter(-1);
+        }
+    }
+
+    /**
+     * Android 12+: LocationProviderManager$…Registration.acceptLocationChange(LocationResult).
+     * Runs for deliveries that did not pass through a hooked onReportLocation (cached last location
+     * on register, OEM report paths) and skips exempt packages.
+     */
+    static final class AcceptHook extends XC_MethodHook {
+        private final SpoofState st;
+
+        AcceptHook(SpoofState st) {
+            this.st = st;
+        }
+
+        @Override
+        protected void beforeHookedMethod(MethodHookParam p) {
+            if (ReportHook.inside() || !st.started() || p.args.length == 0 || p.args[0] == null) return;
+            String pkg = registrationPackage(p.thisObject);
+            if (st.isExempt(pkg)) return;
+            Object manager = null;
             try {
-                Location first = null;
-                try {
-                    first = (Location) XposedHelpers.callMethod(lr, "getLastLocation");
-                } catch (Throwable ignored) {
-                }
-                String provider = first != null ? first.getProvider() : null;
-                if (provider == null) {
-                    try {
-                        provider = (String) XposedHelpers.getObjectField(p.thisObject, "mName");
-                    } catch (Throwable ignored) {
-                    }
-                }
-                Location fake = st.build(provider == null ? "gps" : provider, first);
-                Object replaced;
-                try {
-                    replaced = XposedHelpers.callStaticMethod(lr.getClass(), "wrap", (Object) new Location[]{fake});
-                } catch (Throwable t) {
-                    List<Location> l = new ArrayList<>();
-                    l.add(fake);
-                    replaced = XposedHelpers.callStaticMethod(lr.getClass(), "create", l);
-                }
-                p.args[0] = replaced;
-            } catch (Throwable t) {
-                HookEntry.log("onReportLocation replace failed: " + t);
+                manager = XposedHelpers.getSurroundingThis(p.thisObject);
+            } catch (Throwable ignored) {
+            }
+            Object replaced = spoofResult(st, p.args[0], manager);
+            if (replaced == null) return;
+            p.args[0] = replaced;
+            if (st.debug()) HookEntry.log("accept → spoof for " + pkg);
+        }
+
+        private static String registrationPackage(Object reg) {
+            try {
+                Object id = XposedHelpers.callMethod(reg, "getIdentity");
+                return (String) XposedHelpers.callMethod(id, "getPackageName");
+            } catch (Throwable ignored) {
+                return null;
             }
         }
     }
