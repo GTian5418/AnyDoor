@@ -1,6 +1,6 @@
-package com.zyx.anydoor.xposed;
+package io.github.zhaoyuxiangyyds_lab.anydoor.xposed;
 
-import com.zyx.anydoor.Keys;
+import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodReplacement;
@@ -27,7 +27,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         try {
             if (Keys.PKG.equals(pkg)) {
                 // Let the app know the module is active.
-                XposedHelpers.findAndHookMethod("com.zyx.anydoor.ModuleStatus", lp.classLoader,
+                XposedHelpers.findAndHookMethod("io.github.zhaoyuxiangyyds_lab.anydoor.ModuleStatus", lp.classLoader,
                         "isModuleActive", XC_MethodReplacement.returnConstant(true));
                 return;
             }

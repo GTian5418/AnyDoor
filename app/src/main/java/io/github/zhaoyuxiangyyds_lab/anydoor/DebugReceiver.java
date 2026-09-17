@@ -1,4 +1,4 @@
-package com.zyx.anydoor;
+package io.github.zhaoyuxiangyyds_lab.anydoor;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -7,7 +7,7 @@ import android.location.Location;
 import android.location.LocationManager;
 import android.util.Log;
 
-/** adb-triggerable diagnostics: `am broadcast -a com.zyx.anydoor.PROBE`. Logs to tag AnyDoorProbe. */
+/** adb-triggerable diagnostics: `am broadcast -a io.github.zhaoyuxiangyyds_lab.anydoor.PROBE`. Logs to tag AnyDoorProbe. */
 public class DebugReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(final Context c, Intent intent) {

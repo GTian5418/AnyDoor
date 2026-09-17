@@ -55,14 +55,14 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 2. **Enable the module** in LSPosed / Vector and tick these scopes:
    - ✅ **System Framework** (`android` / `system`) — required for the global hook
    - ✅ **Phone** (`com.android.phone`) — for hiding cell-tower info
-   - ✅ **AnyDoor itself** (`com.zyx.anydoor`)
+   - ✅ **AnyDoor itself** (`io.github.zhaoyuxiangyyds_lab.anydoor`)
 3. **Reboot once.** The `system_server` hook only loads at boot; after that you can start/stop spoofing freely with no further reboots.
 4. Open the app → **Environment Check** → make sure everything is ✓. If "Mock location" or "Overlay" permission is missing, tap **Fix with Root**.
 5. *(Optional, China only)* Place search uses the AMap REST API and needs a free **"Web Service"** key from [console.amap.com](https://console.amap.com/dev/key/app). Paste it under Settings → AMap Key. Everything else (tap-to-pick, paste coords, joystick, routes) works without a key.
 
 > CLI-based frameworks (e.g. Vector CLI):
 > ```sh
-> cli scope set com.zyx.anydoor android/0 system/0 com.android.phone/0 com.zyx.anydoor/0
+> cli scope set io.github.zhaoyuxiangyyds_lab.anydoor android/0 system/0 com.android.phone/0 io.github.zhaoyuxiangyyds_lab.anydoor/0
 > ```
 
 ---

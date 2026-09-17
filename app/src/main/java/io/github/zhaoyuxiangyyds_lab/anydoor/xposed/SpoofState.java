@@ -1,10 +1,10 @@
-package com.zyx.anydoor.xposed;
+package io.github.zhaoyuxiangyyds_lab.anydoor.xposed;
 
 import android.location.Location;
 import android.os.SystemClock;
 
-import com.zyx.anydoor.GeoMath;
-import com.zyx.anydoor.Keys;
+import io.github.zhaoyuxiangyyds_lab.anydoor.GeoMath;
+import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
 
 import java.util.Arrays;
 import java.util.HashSet;

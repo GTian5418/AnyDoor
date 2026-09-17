@@ -1,10 +1,10 @@
-package com.zyx.anydoor;
+package io.github.zhaoyuxiangyyds_lab.anydoor;
 
 /** Shared preference names/keys. "config" is world-readable (read by hooks); "app" is private UI state. */
 public final class Keys {
     private Keys() {}
 
-    public static final String PKG = "com.zyx.anydoor";
+    public static final String PKG = "io.github.zhaoyuxiangyyds_lab.anydoor";
     public static final String CONFIG = "config";
     public static final String APP = "app";
 

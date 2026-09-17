@@ -1,4 +1,4 @@
-package com.zyx.anydoor.xposed;
+package io.github.zhaoyuxiangyyds_lab.anydoor.xposed;
 
 import android.Manifest;
 import android.content.Context;
@@ -7,7 +7,7 @@ import android.location.Location;
 import android.os.Binder;
 import android.os.Process;
 
-import com.zyx.anydoor.Keys;
+import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
 
 import java.util.ArrayList;
 import java.util.List;

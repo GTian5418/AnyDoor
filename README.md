@@ -62,11 +62,11 @@
 
 - ✅ **系统框架**（`android` / `system`）— 全局生效的关键
 - ✅ **电话和通讯录**（`com.android.phone`）— 屏蔽基站定位用
-- ✅ **任意门自身**（`com.zyx.anydoor`）— 强化模式
+- ✅ **任意门自身**（`io.github.zhaoyuxiangyyds_lab.anydoor`）— 强化模式
 
 > 命令行框架（如 Vector CLI）可执行：
 > ```sh
-> cli scope set com.zyx.anydoor android/0 system/0 com.android.phone/0 com.zyx.anydoor/0
+> cli scope set io.github.zhaoyuxiangyyds_lab.anydoor android/0 system/0 com.android.phone/0 io.github.zhaoyuxiangyyds_lab.anydoor/0
 > ```
 
 ### 3. 重启一次手机
