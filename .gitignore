@@ -1,0 +1,23 @@
+# 构建产物
+/build/
+*.apk
+*.apk.idsig
+*.aab
+*.dex
+
+# 签名密钥（切勿提交！build.sh 会自动生成本地调试密钥）
+*.jks
+*.keystore
+keystore.properties
+
+# 本地/编辑器
+.idea/
+.gradle/
+*.iml
+.DS_Store
+Thumbs.db
+local.properties
+
+# 临时
+*.log
+/tmp/

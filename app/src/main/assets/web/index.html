@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>任意门</title>
+<link rel="stylesheet" href="leaflet.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="map"></div>
+
+<!-- top bar -->
+<div class="topbar">
+  <button class="iconbtn" id="btnMenu" aria-label="菜单">
+    <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <div class="search" id="searchBox">
+    <svg class="search-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <input id="q" type="search" placeholder="搜索地点，或粘贴坐标 31.23, 121.47" autocomplete="off" enterkeyhint="search">
+    <button class="clear" id="btnClear" aria-label="清除"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+</div>
+<div class="results" id="results"></div>
+
+<!-- status pill -->
+<div class="pill" id="pill"><span class="dot"></span><span id="pillText">未开始</span></div>
+
+<!-- right fabs -->
+<div class="fabs">
+  <button class="fab" id="fabLayers" title="地图源"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg></button>
+  <button class="fab" id="fabLocate" title="真实位置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></button>
+  <button class="fab" id="fabDpad" title="方向键"><svg viewBox="0 0 24 24"><path d="M12 4l3 3H9l3-3zM12 20l-3-3h6l-3 3zM4 12l3-3v6l-3-3zM20 12l-3 3V9l3 3z"/></svg></button>
+  <button class="fab" id="fabJoy" title="悬浮摇杆"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg></button>
+</div>
+
+<!-- layer picker -->
+<div class="popover hidden" id="layerPop">
+  <div class="popover-title">地图源</div>
+  <button class="opt" data-layer="amap">高德 · 标准</button>
+  <button class="opt" data-layer="amapSat">高德 · 卫星</button>
+  <button class="opt" data-layer="osm">OpenStreetMap</button>
+</div>
+
+<!-- d-pad -->
+<div class="dpad hidden" id="dpad">
+  <div class="dpad-head"><span>方向微调</span><button class="mini" id="dpadClose">×</button></div>
+  <div class="dpad-grid">
+    <button data-d="315">↖</button><button data-d="0">↑</button><button data-d="45">↗</button>
+    <button data-d="270">←</button><span class="dpad-c" id="dpadStep">5m</span><button data-d="90">→</button>
+    <button data-d="225">↙</button><button data-d="180">↓</button><button data-d="135">↘</button>
+  </div>
+  <div class="dpad-steps">
+    <button data-step="1">1m</button><button data-step="5" class="on">5m</button><button data-step="20">20m</button><button data-step="100">100m</button><button data-step="1000">1km</button>
+  </div>
+</div>
+
+<!-- bottom sheet -->
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-head">
+    <div class="sheet-text">
+      <div class="sheet-title" id="tName">点击地图选择位置</div>
+      <div class="sheet-sub" id="tAddr">或在上方搜索地点 / 粘贴坐标</div>
+    </div>
+    <button class="iconbtn ghost" id="btnFav" title="收藏"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9L3.5 9.7l5.9-.8z"/></svg></button>
+  </div>
+  <div class="coords" id="coords">
+    <button class="coord" id="coordBtn"><span class="crs" id="crsLabel">WGS84</span><span id="coordText">--</span></button>
+    <button class="iconbtn ghost small" id="btnCopy" title="复制坐标"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg></button>
+  </div>
+  <div class="route-bar hidden" id="routeBar">
+    <div class="route-info"><span id="routeText">路线模拟中</span><div class="bar"><i id="routeProg"></i></div></div>
+    <button class="mini" id="routeStop">停止</button>
+  </div>
+  <button class="go" id="btnGo"><span class="go-ico"></span><span id="goText">开始模拟</span></button>
+</div>
+
+<!-- drawer -->
+<div class="scrim hidden" id="scrim"></div>
+<nav class="drawer" id="drawer">
+  <div class="drawer-brand">
+    <div class="logo"></div>
+    <div><div class="brand">任意门</div><div class="brand-sub">全局位置模拟 · <span id="verText">1.0</span></div></div>
+  </div>
+  <div class="drawer-status" id="drawerStatus">检查环境中…</div>
+  <button class="nav" data-page="favorites"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9L3.5 9.7l5.9-.8z"/></svg>收藏夹</button>
+  <button class="nav" data-page="history"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>历史记录</button>
+  <button class="nav" data-page="route"><svg viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h5a4 4 0 0 0 0-8H11a4 4 0 0 1 0-8h5"/></svg>路线模拟</button>
+  <button class="nav" data-page="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置</button>
+  <button class="nav" data-page="env"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>环境检查</button>
+  <button class="nav" data-page="about"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>关于与用法</button>
+</nav>
+
+<!-- pages -->
+<section class="page" id="page-favorites">
+  <header><button class="back" data-back></button><h2>收藏夹</h2><button class="text" id="favAdd">＋ 当前位置</button></header>
+  <div class="page-body">
+    <div class="toolbar"><button class="chip" id="favImport">从剪贴板导入</button><button class="chip" id="favExport">导出到剪贴板</button></div>
+    <div class="list" id="favList"></div>
+  </div>
+</section>
+
+<section class="page" id="page-history">
+  <header><button class="back" data-back></button><h2>历史记录</h2><button class="text" id="histClear">清空</button></header>
+  <div class="page-body"><div class="list" id="histList"></div></div>
+</section>
+
+<section class="page" id="page-route">
+  <header><button class="back" data-back></button><h2>路线模拟</h2><button class="text" id="routeSave">保存路线</button></header>
+  <div class="page-body">
+    <div class="card">
+      <div class="card-title">路径点 <span class="muted" id="routeCount">0 个</span></div>
+      <div class="list compact" id="routePoints"></div>
+      <div class="toolbar">
+        <button class="chip primary" id="routeEdit">在地图上添加路径点</button>
+        <button class="chip" id="routeAddCur">添加当前目标</button>
+        <button class="chip" id="routeClear">清空</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row"><span>速度</span><span class="muted" id="routeSpeedText">5 km/h</span></div>
+      <input type="range" id="routeSpeed" min="1" max="120" step="1" value="5">
+      <div class="toolbar">
+        <button class="chip" data-speed="5">步行 5</button><button class="chip" data-speed="12">跑步 12</button>
+        <button class="chip" data-speed="20">骑行 20</button><button class="chip" data-speed="50">开车 50</button>
+      </div>
+      <label class="row switch"><span>到达终点后循环</span><input type="checkbox" id="routeLoop"><i></i></label>
+      <div class="muted small" id="routeSummary">添加至少 2 个路径点</div>
+    </div>
+    <button class="go" id="routeGo"><span id="routeGoText">开始路线模拟</span></button>
+    <div class="card">
+      <div class="card-title">已保存的路线</div>
+      <div class="list compact" id="routeSaved"></div>
+    </div>
+  </div>
+</section>
+
+<section class="page" id="page-settings">
+  <header><button class="back" data-back></button><h2>设置</h2></header>
+  <div class="page-body" id="settingsBody"></div>
+</section>
+
+<section class="page" id="page-env">
+  <header><button class="back" data-back></button><h2>环境检查</h2><button class="text" id="envRefresh">刷新</button></header>
+  <div class="page-body">
+    <div class="list" id="envList"></div>
+    <div class="toolbar">
+      <button class="chip primary" id="envSetup">一键 Root 配置</button>
+      <button class="chip" id="envReboot">重启手机</button>
+      <button class="chip" id="envLog">框架日志</button>
+    </div>
+    <pre class="log hidden" id="envLogBox"></pre>
+    <div class="card muted small" id="envHelp">
+      需要：手机已 Root，已安装 LSPosed / Vector 框架。模块作用域勾选「系统框架 (android)」和「电话 (com.android.phone)」，然后重启一次手机。之后开关无需再重启。
+    </div>
+  </div>
+</section>
+
+<section class="page" id="page-about">
+  <header><button class="back" data-back></button><h2>关于与用法</h2></header>
+  <div class="page-body">
+    <div class="card">
+      <div class="card-title">任意门是什么</div>
+      <p>一个基于 Xposed 的全局位置模拟工具。它在系统定位服务内部改写每个应用收到的定位，并抹去「模拟位置」标记；同时用测试定位源持续推送坐标，室内没有 GPS 信号也照样有定位。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">怎么用</div>
+      <ol>
+        <li>「环境检查」里确认框架已激活、作用域已配置，首次需重启一次。</li>
+        <li>搜索地点、粘贴坐标或直接点地图，选好位置。</li>
+        <li>点「开始模拟」。任何应用看到的都是这个位置，开关随时切换，无需重启。</li>
+        <li>用方向键 / 悬浮摇杆微调，或用「路线模拟」按速度沿路径移动。</li>
+      </ol>
+    </div>
+    <div class="card">
+      <div class="card-title">坐标系说明</div>
+      <p>内部一律使用 WGS-84（GPS 坐标）。高德地图瓦片为 GCJ-02，应用已自动纠偏，所以你在高德底图上点的位置就是应用里看到的位置。从高德/百度网页复制来的坐标，请在设置里选择对应的坐标系再粘贴。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">防检测建议</div>
+      <p>保持「屏蔽 WiFi / 基站定位」开启，可避免高德、腾讯等定位 SDK 用周围 WiFi 反推真实位置。随机漂移 2～5 米更像真实 GPS。对特别敏感的应用，可在 LSPosed 里额外把它加进作用域（强化模式）。</p>
+    </div>
+    <div class="card muted small">版本 <span id="aboutVer"></span> · 仅供学习与测试使用</div>
+  </div>
+</section>
+
+<div class="toast" id="toast"></div>
+<div class="modal-scrim hidden" id="modalScrim"><div class="modal" id="modal"></div></div>
+
+<script src="leaflet.js"></script>
+<script src="preview.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

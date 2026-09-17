@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">任意门</string>
+    <string name="xposed_desc">全局位置模拟：在系统服务内改写定位并隐藏模拟标记，可选屏蔽 WiFi/基站定位。作用域请勾选「系统框架」和「电话」。</string>
+    <string-array name="xposed_scope">
+        <item>android</item>
+        <item>com.android.phone</item>
+    </string-array>
+</resources>
