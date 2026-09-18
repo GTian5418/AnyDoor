@@ -34,13 +34,23 @@ final class SystemHooks {
     private static final int EVENT_CELL_INFO_CHANGED = 11;
 
     /** Hook counts, reported back to the app through the probe provider (see LastLocationHook). */
-    private static volatile int lastHooks, deliverHooks, reportHooks, acceptHooks;
+    private static volatile int lastHooks, deliverHooks, reportHooks, acceptHooks, mockGrantHooks;
     private static final java.util.concurrent.atomic.AtomicLong deliveries = new java.util.concurrent.atomic.AtomicLong();
     private static volatile long lastDelivery;
     private static volatile String wifiState = "none";
+    private static volatile int mockOp = -2;
 
     static void install(XC_LoadPackage.LoadPackageParam lp, final SpoofState st) {
         ClassLoader cl = lp.classLoader;
+
+        // ---------- mock-location app-op grant ----------
+        // Some ROMs (notably ColorOS/OxygenOS/realme on Android 12+) keep OP_MOCK_LOCATION at
+        // MODE_ERRORED even after `appops set … android:mock_location allow` reports "allow", so
+        // addTestProvider/setTestProviderLocation throw SecurityException and our test providers
+        // never start – then apps that stream updates (WeChat mini-programs, Amap) get no fix and
+        // fall back to network positioning, which our WiFi/cell block empties. Grant the op for our
+        // own package inside the framework so the test providers register on every ROM.
+        installMockLocationGrant(cl);
 
         // ---------- LocationManagerService ----------
         Class<?> lms = XposedHelpers.findClassIfExists("com.android.server.LocationManagerService", cl);
@@ -159,6 +169,64 @@ final class SystemHooks {
         HookEntry.log("system hooks installed (sdk " + android.os.Build.VERSION.SDK_INT + ")");
     }
 
+    /**
+     * Android 12+: LocationManagerService.addTestProvider / setTestProviderEnabled /
+     * setTestProviderLocation / removeTestProvider gate on
+     * {@code getAppOpsHelper().noteOp(OP_MOCK_LOCATION, caller)}, and noteOp throws a
+     * SecurityException when the op resolves to MODE_ERRORED. Force the location injector's app-op
+     * helper to report "allowed" for OP_MOCK_LOCATION when the caller is our own package, so the
+     * calls succeed even on ROMs that keep the op errored despite the stored appops mode.
+     */
+    private static void installMockLocationGrant(ClassLoader cl) {
+        Class<?> helper = XposedHelpers.findClassIfExists(
+                "com.android.server.location.injector.SystemAppOpsHelper", cl);
+        if (helper == null) {
+            HookEntry.log("SystemAppOpsHelper not found; mock-location grant skipped (sdk "
+                    + Build.VERSION.SDK_INT + ")");
+            return;
+        }
+        final int op = resolveMockOp(cl);
+        mockOp = op;
+        XC_MethodHook grant = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                if (op < 0 || p.args.length < 2 || !(p.args[0] instanceof Integer)
+                        || (Integer) p.args[0] != op || p.args[1] == null) return;
+                String pkg;
+                try {
+                    pkg = (String) XposedHelpers.callMethod(p.args[1], "getPackageName");
+                } catch (Throwable t) {
+                    return;
+                }
+                // Only our own package, only the mock-location op: nothing else is affected.
+                if (Keys.PKG.equals(pkg)) p.setResult(Boolean.TRUE);
+            }
+        };
+        int n = 0;
+        for (String m : new String[]{"noteOp", "noteOpNoThrow", "checkOpNoThrow", "startOpNoThrow"}) {
+            n += HookUtil.hookAll(helper, m, grant);
+        }
+        mockGrantHooks = n;
+        HookEntry.log("mock-location grant hooks: " + n + " (op=" + op + ")");
+    }
+
+    /** OP_MOCK_LOCATION code; resolved reflectively because it is a hidden constant, 58 as fallback. */
+    private static int resolveMockOp(ClassLoader cl) {
+        Class<?> aom = XposedHelpers.findClassIfExists("android.app.AppOpsManager", cl);
+        if (aom != null) {
+            try {
+                return XposedHelpers.getStaticIntField(aom, "OP_MOCK_LOCATION");
+            } catch (Throwable ignored) {
+            }
+            try {
+                Object v = XposedHelpers.callStaticMethod(aom, "strOpToOp", "android:mock_location");
+                if (v instanceof Integer) return (Integer) v;
+            } catch (Throwable ignored) {
+            }
+        }
+        return 58; // stable AOSP value for OP_MOCK_LOCATION
+    }
+
     /** getScanResults → empty, getConnectionInfo → BSSID masked, for non-exempt normal apps. */
     private static void installWifiHooks(Class<?> wifi, final SpoofState st) {
         int n = 0;
@@ -257,7 +325,7 @@ final class SystemHooks {
     /** Summary of what got hooked, for the app's environment check. */
     static String hookSummary() {
         return "last=" + lastHooks + " deliver=" + deliverHooks + " report=" + reportHooks
-                + " accept=" + acceptHooks + " wifi=" + wifiState;
+                + " accept=" + acceptHooks + " mock=" + mockGrantHooks + " wifi=" + wifiState;
     }
 
     /** SSID → <unknown ssid>, network id → -1 on a WifiInfo copy (privacy mode). */
@@ -379,6 +447,7 @@ final class SystemHooks {
                 b.putBoolean("prefs", st.configReadable());
                 b.putString("channel", st.channel());
                 b.putBoolean("started", st.started());
+                b.putBoolean("mockGrant", mockGrantHooks > 0);
                 b.putInt("sdk", Build.VERSION.SDK_INT);
                 b.putString("hooks", hookSummary());
                 probe.setExtras(b);

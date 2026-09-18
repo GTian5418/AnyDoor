@@ -124,6 +124,7 @@ public class JsBridge {
                 o.put("sysPrefs", probe.getBoolean("prefs", false));
                 o.put("sysChannel", probe.getString("channel", ""));
                 o.put("sysStarted", probe.getBoolean("started", false));
+                o.put("mockGrant", probe.getBoolean("mockGrant", false));
                 o.put("sysSdk", probe.getInt("sdk", 0));
                 o.put("sysHooks", probe.getString("hooks", ""));
             }

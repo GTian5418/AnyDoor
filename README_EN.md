@@ -11,7 +11,9 @@
 
 <p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
 
-**1.3.4 repeated real-location fix + Android 15/16 WiFi block fix**: [APK and upgrade notes](../../releases/tag/v1.3.4) · [Changelog](CHANGELOG.md). (1) Real-location requests no longer stall after the first few attempts: GPS no longer waits behind search/reverse-geocoding, each provider has an independent listener, plus timeout cleanup, duplicate-tap protection and lifecycle teardown. (2) On Android 15/16 `WifiServiceImpl.getScanResults` returns a `ParceledListSlice` instead of a `List`, so scan suppression was silently skipped and network-positioning SDKs (Amap/Tencent/Baidu, UnionPay) leaked the real location over the spoofed GPS — now fixed. **The Android 15/16 path is source-verified, not tested on a physical device**; see the release notes for the verification scope.
+**1.3.5 mock-location denied on ColorOS/OxygenOS → WeChat mini-programs / Amap can locate again**: [APK and upgrade notes](../../releases/tag/v1.3.5) · [Changelog](CHANGELOG.md). On some Android 16 ROMs (realme, OnePlus) the environment check was all-green yet threw `SecurityException … not allowed to perform MOCK_LOCATION`; WeChat "send location" worked but mini-programs (e.g. Hello) failed and Amap reported `errorCode 13`. Root cause: even when `appops` reports mock location as allowed, the framework still denies `OP_MOCK_LOCATION`, so our test providers never register and any app that streams updates gets no fix. We now grant the op **inside the framework, only for this app and only for the mock-location op**, so the test providers register on every ROM. **Not retested on ColorOS/OxygenOS hardware**; the logic is verified against AOSP `android16-release`. Fully reboot once after upgrading.
+
+<sub>Earlier: 1.3.4 fixed repeated real-location stalls and the Android 15/16 `getScanResults`/`ParceledListSlice` WiFi-block leak. See the [Changelog](CHANGELOG.md).</sub>
 
 
 > An Xposed module that rewrites **system-provided locations** by rewriting locations inside `system_server` — no mock-provider flag, no per-app hooking, works indoors without a GPS fix.

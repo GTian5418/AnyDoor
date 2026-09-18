@@ -822,15 +822,24 @@ async function renderEnv() {
   }
   const svc = e.service || {};
   if (e.started) rows.push(['定位服务', svc.running ? 'ok' : 'bad', svc.running ? `GPS ${svc.gpsReady ? '就绪' : '未就绪'} / 网络 ${svc.networkReady ? '就绪' : '未就绪'}` : '服务未运行，请重新开始模拟']);
-  rows.push(['模拟位置权限', e.mockAllowed ? 'ok' : 'bad', e.mockAllowed ? '已授予' : '未授予（点下方一键配置）']);
+  // System framework can grant OP_MOCK_LOCATION for us even when the ROM keeps the stored appop
+  // errored (ColorOS/OxygenOS), so treat either signal as granted.
+  rows.push(['模拟位置权限', (e.mockAllowed || e.mockGrant) ? 'ok' : 'bad',
+    e.mockAllowed ? '已授予' : (e.mockGrant ? '已由系统框架放行（无需在开发者选项手动选择）' : '未授予（点下方一键配置）')]);
   rows.push(['悬浮窗权限', e.overlay ? 'ok' : 'warn', e.overlay ? '已授予（摇杆可用）' : '未授予，摇杆不可用']);
   rows.forEach(([name, state, desc]) => box.appendChild(envItem(name, state, desc)));
   const dev = el('div', 'card muted small');
   dev.textContent = `${e.device} · SDK ${e.sdk}\nApp ${e.version || '?'} / Hook ${e.sysVersion || 'unknown'}\n配置 ${e.configRevision || 0} / 系统 ${e.sysRevision || 0}`
     + (e.scope ? '\n作用域: ' + e.scope.replace(/\s+/g, ' ') : '') + (e.sysHooks ? '\n系统 Hook: ' + e.sysHooks : '');
   dev.style.whiteSpace = 'pre-wrap'; box.appendChild(dev);
-  for (const text of [e.mockError, svc.providerNote]) if (text) { const m = el('div', 'card small'); m.textContent = text; box.appendChild(m); }
+  for (const text of [friendlyMockError(e.mockError), svc.providerNote]) if (text) { const m = el('div', 'card small'); m.textContent = text; box.appendChild(m); }
   updateDrawerStatus(e);
+}
+// Turn the framework's raw SecurityException for mock location into an actionable hint.
+function friendlyMockError(msg) {
+  if (!msg) return msg;
+  if (/MOCK_LOCATION/i.test(msg)) return '系统拒绝模拟定位：更新到本版本后请完整重启手机，让系统框架 Hook 放行本应用；若仍失败，可在「开发者选项 → 模拟位置信息应用」里选择任意门。原始信息：' + msg;
+  return msg;
 }
 function envItem(name, st, desc) {
   const it = el('div', 'env');

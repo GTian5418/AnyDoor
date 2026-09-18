@@ -1,5 +1,27 @@
 # 更新记录
 
+## 1.3.5 — 2026-09-18（ColorOS/OxygenOS 等 ROM 模拟定位被拒修复 → 微信小程序/高德重新可定位）
+
+修复用户反馈的两处（realme、一加 等 Android 16 机型）：一加机型环境检查全绿但底部报 `java.lang.SecurityException: … not allowed to perform MOCK_LOCATION`；微信本身“发送位置”能定位，但小程序（如哈啰）定位失败、高德类应用报 `errorCode=13 获取到的基站和WIFI信息为空`。两者其实是同一个根因。
+
+### 根因
+
+- ColorOS/OxygenOS/realme 等 ROM 在 Android 12+ 上，即便 `appops set … android:mock_location allow` 后 `appops get` 显示 allow（环境检查“模拟位置权限 ✓”），系统框架里 `SystemAppOpsHelper.noteOp(OP_MOCK_LOCATION)` 仍返回 `MODE_ERRORED`。于是 `LocationManagerService` 的 `addTestProvider / setTestProviderEnabled / setTestProviderLocation` 直接抛 `SecurityException`，**任意门的 gps/network 测试定位源根本没能注册**。
+- 没有测试定位源持续下发，室内/无真实 GPS 时就没有“活的”定位源。系统侧 `getLastLocation` hook 仍能改写一次性查询（所以微信“发送位置”正常），但通过 `requestLocationUpdates / getCurrentLocation` 持续取位的应用（微信小程序走腾讯定位 SDK、高德）拿不到下发，转而用自带的 WiFi/基站网络定位——而这部分被本模块清空，于是彻底定位失败。
+- 已比对 AOSP `android16-release`：四个 test-provider 接口都以 `noteOp(OP_MOCK_LOCATION)` 为闸门，`MODE_ERRORED` 即抛异常；并反编译腾讯定位 SDK 7.6.1.12 确认其 `network` 分支消费系统 `network` provider、`gps` 分支消费系统 `gps` provider——恢复测试定位源即可让它们经既有 `acceptLocationChange`（改写成非 mock）拿到模拟坐标。
+
+### 修复
+
+- 在系统框架进程新增对 `com.android.server.location.injector.SystemAppOpsHelper` 的 hook：当被查询的 app-op 是 `OP_MOCK_LOCATION` 且调用方包名为本应用时，`noteOp/noteOpNoThrow/checkOpNoThrow/startOpNoThrow` 直接返回“允许”。**只针对本应用、只针对模拟定位这一个 op**，其他应用与其他权限不受影响。这样测试定位源在各 ROM 都能注册，微信小程序、高德等重新能取到模拟坐标。
+- `OP_MOCK_LOCATION` 的 op 码优先反射自 `AppOpsManager`（隐藏常量），失败回退到稳定值 58。
+- 环境检查“模拟位置权限”改为 `appops` 放行或系统框架放行任一满足即视为已授予，并说明“已由系统框架放行（无需在开发者选项手动选择）”；系统 Hook 摘要新增 `mock=` 数量。若仍出现 `MOCK_LOCATION` 报错，界面给出可操作提示（升级后完整重启；仍失败则在开发者选项将“模拟位置信息应用”设为任意门），不再只显示原始异常。
+
+### 验证与升级
+
+主机回归全绿（沿用既有用例：核心/状态/迁移/Shell/镜像/真实定位/诊断/桥接）；Android SDK 编译、DEX、APK 对齐与 v2/v3 签名校验通过，签名证书与既往版本一致，可覆盖升级。新增的系统框架 app-op 放行属 Xposed 侧代码，逻辑基于 AOSP `android16-release` 源码核对，**未在 ColorOS/OxygenOS 真机验证**。
+
+覆盖安装 `AnyDoor.apk` 后请**完整重启一次手机**，让系统框架侧模块随 v1.3.5 重新注入。仍需在框架管理器勾选「系统框架 (system/android)」「电话」「蓝牙」作用域。升级无需卸载或清除数据。若小程序仍定位失败，请反馈机型、Android/框架版本与“复制诊断”，不要公开真实坐标。
+
 ## 1.3.4 — 2026-09-18（真实定位连续使用修复 + Android 15/16 WiFi 屏蔽修复）
 
 修复用户反馈的“真实位置只有前 1～2 次正常，之后卡住，划掉后台才恢复”，以及 Android 15/16 上 WiFi 扫描屏蔽失效导致的定位泄漏（表现之一：云闪付等应用定位不对/被判环境异常）。

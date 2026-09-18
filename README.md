@@ -11,7 +11,9 @@
 
 <p align="center"><b>简体中文</b> · <a href="README_EN.md">English</a></p>
 
-**1.3.4 真实定位连续使用修复 + Android 15/16 WiFi 屏蔽修复**：[下载 APK 与升级说明](../../releases/tag/v1.3.4) · [完整更新记录](CHANGELOG.md)。① 针对“真实位置前 1～2 次可用、之后卡住”的反馈，真实定位不再排队等待搜索／地址解析，增加独立监听、超时回收、重复点击保护和页面销毁清理；② 修复 Android 15/16 上 `getScanResults` 返回 `ParceledListSlice` 导致 WiFi 屏蔽静默失效、网络定位泄漏真实位置的问题（云闪付/高德定位不对的成因之一）。**Android 15/16 为源码级修复、未真机复测**，验证范围与复测步骤见发行说明。
+**1.3.5 ColorOS/OxygenOS 等 ROM 模拟定位被拒修复 → 微信小程序/高德重新可定位**：[下载 APK 与升级说明](../../releases/tag/v1.3.5) · [完整更新记录](CHANGELOG.md)。修复 realme/一加 等 Android 16 机型上「环境检查全绿却报 `SecurityException … not allowed to perform MOCK_LOCATION`」「微信发送位置正常但小程序（哈啰）定位失败、高德报 errorCode 13」——根因是这些 ROM 即便 `appops` 显示已允许，系统框架仍拒绝 `OP_MOCK_LOCATION`，导致测试定位源注册失败、持续取位的应用拿不到坐标。现在在系统框架进程内**仅为本应用、仅对模拟定位这个 op** 放行，测试定位源在各 ROM 都能注册。**未在 ColorOS/OxygenOS 真机复测**，逻辑基于 AOSP `android16-release` 源码核对；升级后请完整重启一次手机。
+
+<sub>更早：1.3.4 修复真实定位连续使用卡住，以及 Android 15/16 `getScanResults` 返回 `ParceledListSlice` 导致的 WiFi 屏蔽失效／网络定位泄漏。见 [更新记录](CHANGELOG.md)。</sub>
 
 
 > 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。
