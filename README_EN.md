@@ -11,7 +11,7 @@
 
 <p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
 
-**1.3.3 compatibility prerelease**: [APK and upgrade notes](../../releases/tag/v1.3.3) · [Changelog](CHANGELOG.md). Configuration transport, provider lifecycle and diagnostics were repaired and deprecated NSP sharing was removed. Host regression tests and APK build verification are complete; Android 16, WeChat and DingTalk have **not** been tested on physical devices for this release.
+**1.3.4 repeated real-location fix + Android 15/16 WiFi block fix**: [APK and upgrade notes](../../releases/tag/v1.3.4) · [Changelog](CHANGELOG.md). (1) Real-location requests no longer stall after the first few attempts: GPS no longer waits behind search/reverse-geocoding, each provider has an independent listener, plus timeout cleanup, duplicate-tap protection and lifecycle teardown. (2) On Android 15/16 `WifiServiceImpl.getScanResults` returns a `ParceledListSlice` instead of a `List`, so scan suppression was silently skipped and network-positioning SDKs (Amap/Tencent/Baidu, UnionPay) leaked the real location over the spoofed GPS — now fixed. **The Android 15/16 path is source-verified, not tested on a physical device**; see the release notes for the verification scope.
 
 
 > An Xposed module that rewrites **system-provided locations** by rewriting locations inside `system_server` — no mock-provider flag, no per-app hooking, works indoors without a GPS fix.

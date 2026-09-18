@@ -7,9 +7,19 @@ window.__cb = (id, data) => { const f = cbs[id]; if (f) { delete cbs[id]; f(data
 function call(method, ...args) {
   return new Promise((resolve) => {
     const id = cbSeq++;
-    cbs[id] = resolve;
-    try { N[method](id, ...args); } catch (e) { resolve({ ok: false, error: String(e) }); }
+    const timeoutMs = method === 'locate' ? 12000 : method === 'planRoute' ? 120000 : 30000;
+    const finish = (data) => { clearTimeout(timer); delete cbs[id]; resolve(data); };
+    const timer = setTimeout(() => finish({ ok: false, error: method === 'locate'
+      ? '定位超时，请确认定位权限和系统定位开关后重试' : '请求超时，请检查网络后重试' }), timeoutMs);
+    cbs[id] = finish;
+    try { N[method](id, ...args); } catch (e) { finish({ ok: false, error: String(e) }); }
   });
+}
+// Both entry points share one request; repeated taps cannot build an unbounded native queue.
+let locating = null;
+function requestRealLocation() {
+  if (!locating) locating = call('locate').then(r => { locating = null; return r; });
+  return locating;
 }
 const toast = (m) => { try { N.toast(m); } catch (e) {} showToast(m); };
 function showToast(m) {
@@ -580,7 +590,7 @@ function endpointMenu(which) {
   acts.push({ t: '搜索地点', fn: () => placePicker(which === 'start' ? '搜索起点' : '搜索终点', (it) => set(it.lat, it.lng, it.name)) });
   if (S.favs.length) acts.push({ t: '从收藏选择', fn: () => listPicker('收藏夹', S.favs, (f) => set(f.lat, f.lng, f.name)) });
   if (S.hist.length) acts.push({ t: '从历史选择', fn: () => listPicker('历史记录', S.hist, (h) => set(h.lat, h.lng, h.name)) });
-  if (which === 'start') acts.push({ t: '真实位置', fn: async () => { const r = await call('locate'); if (r && r.ok) set(r.lat, r.lng, '真实位置'); else toast(r && r.error || '定位失败'); } });
+  if (which === 'start') acts.push({ t: '真实位置', fn: async () => { const r = await requestRealLocation(); if (r && r.ok) set(r.lat, r.lng, '真实位置'); else toast(r && r.error || '定位失败'); } });
   sheetMenu(which === 'start' ? '起点' : '终点', acts);
 }
 function listPicker(title, items, onPick) {
@@ -946,15 +956,27 @@ function bind() {
 // call a Native method that returns a String synchronously
 function call2(fn) { return new Promise(res => { try { res(fn()); } catch (e) { res(String(e)); } }); }
 
+let locateUiBusy = false;
 async function locateReal() {
-  toast('正在获取真实位置…');
-  const r = await call('locate');
-  if (!r || !r.ok) { toast(r && r.error || '定位失败'); return; }
-  if (!realMarker) realMarker = L.marker([0, 0], { icon: L.divIcon({ className: '', html: '<div class="real-dot"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }), interactive: false });
-  const p = toMap(r.lat, r.lng); realMarker.setLatLng(p); realMarker.addTo(map);
-  map.flyTo(p, 16, { duration: .5 });
-  toast('真实位置 · ' + r.provider + ' · 精度' + Math.round(r.acc) + 'm');
-  confirmModal('使用真实位置？', '把当前真实位置设为模拟目标（会先纠偏为标准坐标）。', () => pickTarget(r.lat, r.lng, { name: '当前真实位置', reverse: true }));
+  if (locateUiBusy) return;
+  locateUiBusy = true;
+  const button = $('#fabLocate');
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  try {
+    toast('正在获取真实位置…');
+    const r = await requestRealLocation();
+    if (!r || !r.ok) { toast(r && r.error || '定位失败'); return; }
+    if (!realMarker) realMarker = L.marker([0, 0], { icon: L.divIcon({ className: '', html: '<div class="real-dot"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }), interactive: false });
+    const p = toMap(r.lat, r.lng); realMarker.setLatLng(p); realMarker.addTo(map);
+    map.flyTo(p, 16, { duration: .5 });
+    toast('真实位置 · ' + r.provider + ' · 精度' + Math.round(r.acc) + 'm');
+    confirmModal('使用真实位置？', '把当前真实位置设为模拟目标（会先纠偏为标准坐标）。', () => pickTarget(r.lat, r.lng, { name: '当前真实位置', reverse: true }));
+  } finally {
+    locateUiBusy = false;
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+  }
 }
 
 /* ==== boot ==== */

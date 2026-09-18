@@ -21,7 +21,8 @@ assert ANDROID.exists(), 'Set ANDROID_JAR or ANDROID_SDK_ROOT'
 CLASSES=OUT/'classes';CLASSES.mkdir(exist_ok=True)
 cp=os.pathsep.join(map(str,[JSON,KXML,ANDROID]))
 files=[SRC/n for n in ['Keys.java','GeoMath.java','ConfigSnapshot.java','ProviderController.java','RootShell.java','MirrorCommand.java','LegacyPrefsMigration.java','xposed/SpoofState.java']]
-files+=list((ROOT/'tests').rglob('*.java'))
+files+=list((ROOT/'tests/stubs').rglob('*.java'))
+files+=list((ROOT/'tests/io').rglob('*.java'))
 subprocess.run(['javac','--release','8','-encoding','UTF-8','-cp',cp,'-d',str(CLASSES)]+list(map(str,files)),check=True)
 runtime=os.pathsep.join(map(str,[CLASSES,JSON,KXML,ANDROID]))
 base=['java',f'-Dtest.mirror={OUT / "mirror.json"}','-cp',runtime]
@@ -30,4 +31,14 @@ for cls in ['CoreTest','xposed.StateTest','MigrationTest']:
 bash=os.environ.get('TEST_BASH') or (r'C:/Program Files/Git/bin/bash.exe' if os.name=='nt' else shutil.which('bash'))
 subprocess.run(base+['io.github.zhaoyuxiangyyds_lab.anydoor.ShellTest',bash],check=True)
 subprocess.run(base+['io.github.zhaoyuxiangyyds_lab.anydoor.MirrorTest',bash,str(OUT)],check=True)
-subprocess.run(['node',str(ROOT/'tests/diagnostics.cjs')],check=True)
+# RealLocationRequest is compiled on its own, against dedicated minimal android.location/android.os
+# stubs in tests/location, so those stubs never reach the production/regression classpath above.
+LOC=OUT/'location-classes';LOC.mkdir(exist_ok=True)
+loc_src=[SRC/'RealLocationRequest.java']+list((ROOT/'tests/location').rglob('*.java'))
+subprocess.run(['javac','--release','8','-encoding','UTF-8','-cp',str(ANDROID),'-d',str(LOC)]+list(map(str,loc_src)),check=True)
+loc_runtime=os.pathsep.join(map(str,[LOC,ANDROID]))
+subprocess.run(['java','-cp',loc_runtime,'io.github.zhaoyuxiangyyds_lab.anydoor.LocationRequestTest'],check=True)
+node=os.environ.get('TEST_NODE') or shutil.which('node') or 'node'
+subprocess.run([node,str(ROOT/'tests/diagnostics.cjs')],check=True)
+bridge=ROOT/'tests/location-bridge.cjs'
+if bridge.exists(): subprocess.run([node,str(bridge)],check=True)

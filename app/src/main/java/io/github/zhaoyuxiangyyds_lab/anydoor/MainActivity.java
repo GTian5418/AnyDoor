@@ -163,6 +163,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (bridge != null) bridge.destroy();
         if (web != null) web.destroy();
         super.onDestroy();
     }

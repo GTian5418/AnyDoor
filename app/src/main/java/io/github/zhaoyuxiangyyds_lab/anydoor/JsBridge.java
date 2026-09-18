@@ -29,11 +29,22 @@ public class JsBridge {
     private final MainActivity act;
     private final WebView web;
     private final ExecutorService pool = Executors.newFixedThreadPool(3);
+    private final RealLocationRequest realLocation;
+    private volatile boolean destroyed;
     private final ArrayDeque<String> logs = new ArrayDeque<>();
 
     JsBridge(MainActivity a, WebView w) {
         act = a;
         web = w;
+        realLocation = new RealLocationRequest((LocationManager) a.getSystemService(Context.LOCATION_SERVICE),
+                new android.os.Handler(android.os.Looper.getMainLooper()));
+    }
+
+    /** Called on the UI thread before the WebView is destroyed. */
+    void destroy() {
+        destroyed = true;
+        realLocation.close();
+        pool.shutdownNow();
     }
 
     void log(String s) {
@@ -44,9 +55,11 @@ public class JsBridge {
     }
 
     private void cb(final int id, final JSONObject json) {
+        if (destroyed) return;
         web.post(new Runnable() {
             @Override
             public void run() {
+                if (destroyed) return;
                 web.evaluateJavascript("window.__cb && window.__cb(" + id + "," + json.toString() + ")", null);
             }
         });
@@ -208,6 +221,7 @@ public class JsBridge {
     public void setStarted(boolean on) {
         Intent i = new Intent(act, SpoofService.class).setAction(on ? SpoofService.ACTION_START : SpoofService.ACTION_STOP);
         if (on) {
+            act.runOnUiThread(() -> { if (!destroyed) realLocation.cancel(); });
             if (Build.VERSION.SDK_INT >= 26) act.startForegroundService(i);
             else act.startService(i);
         } else {
@@ -394,72 +408,22 @@ public class JsBridge {
         });
     }
 
-    private static Location lastKnown(LocationManager lm) {
-        Location best = null;
-        for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER}) {
-            try {
-                Location l = lm.getLastKnownLocation(p);
-                if (l != null && !l.isFromMockProvider() && (best == null || l.getTime() > best.getTime())) best = l;
-            } catch (Throwable ignored) {
-            }
-        }
-        return best;
-    }
-
-    /** Block up to ~8s for a single fresh fix from GPS or network. */
-    private static Location requestOneFix(final LocationManager lm) {
-        final Location[] box = new Location[1];
-        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        final android.os.HandlerThread ht = new android.os.HandlerThread("anydoor-locate");
-        ht.start();
-        final android.location.LocationListener listener = new android.location.LocationListener() {
-            @Override public void onLocationChanged(Location l) { box[0] = l; latch.countDown(); }
-            @Override public void onProviderDisabled(String p) {}
-            @Override public void onProviderEnabled(String p) {}
-            @Override public void onStatusChanged(String p, int st, android.os.Bundle e) {}
-        };
-        try {
-            android.os.Looper looper = ht.getLooper();
-            for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
-                try {
-                    if (lm.isProviderEnabled(p)) lm.requestSingleUpdate(p, listener, looper);
-                } catch (Throwable ignored) {
-                }
-            }
-            latch.await(8, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Throwable ignored) {
-        } finally {
-            try { lm.removeUpdates(listener); } catch (Throwable ignored) {}
-            ht.quitSafely();
-        }
-        return box[0];
-    }
-
-    /** Real device location (only meaningful while spoofing is off; our package is exempt from hooks). */
+    /** Independent of the network pool: slow reverse geocoding must never queue real GPS requests. */
     @JavascriptInterface
     public void locate(final int id) {
-        pool.submit(new Runnable() {
-            @Override
-            public void run() {
+        act.runOnUiThread(() -> {
+            if (destroyed) return;
+            if (SpoofService.isRunning()) { cb(id, err("请先停止模拟，再获取真实位置")); return; }
+            realLocation.request((location, error) -> {
+                if (destroyed) return;
+                if (SpoofService.isRunning()) { cb(id, err("请先停止模拟，再获取真实位置")); return; }
+                if (location == null) { cb(id, err(error)); return; }
                 try {
-                    if (SpoofService.isRunning()) { cb(id, err("请先停止模拟，再获取真实位置")); return; }
-                    LocationManager lm = (LocationManager) act.getSystemService(Context.LOCATION_SERVICE);
-                    Location best = lastKnown(lm);
-                    // Nothing cached (common indoors, or right after boot): actively ask for one fix.
-                    if (best == null || System.currentTimeMillis() - best.getTime() > 60000) {
-                        Location fresh = requestOneFix(lm);
-                        if (fresh != null && (best == null || fresh.getTime() > best.getTime())) best = fresh;
-                    }
-                    if (best == null) {
-                        cb(id, err("暂无定位：请到窗边/室外，并确认已开定位与 WiFi 后重试"));
-                        return;
-                    }
-                    cb(id, new JSONObject().put("ok", true).put("lat", best.getLatitude()).put("lng", best.getLongitude())
-                            .put("acc", best.getAccuracy()).put("provider", best.getProvider()).put("age", System.currentTimeMillis() - best.getTime()));
-                } catch (Throwable t) {
-                    cb(id, err(String.valueOf(t)));
-                }
-            }
+                    cb(id, new JSONObject().put("ok", true).put("lat", location.getLatitude()).put("lng", location.getLongitude())
+                            .put("acc", location.getAccuracy()).put("provider", location.getProvider())
+                            .put("age", RealLocationRequest.ageMillis(location)));
+                } catch (Exception e) { cb(id, err(String.valueOf(e))); }
+            });
         });
     }
 

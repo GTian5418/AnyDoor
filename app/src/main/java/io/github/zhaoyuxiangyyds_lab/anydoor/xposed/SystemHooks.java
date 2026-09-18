@@ -169,9 +169,12 @@ final class SystemHooks {
                 Object res = p.getResult();
                 if (res == null) return;
                 try {
-                    if (res instanceof List) p.setResult(new ArrayList<>());
-                    else p.setResult(XposedHelpers.newInstance(res.getClass(), new ArrayList<>()));
+                    p.setResult(emptyLike(res));
                 } catch (Throwable t) {
+                    // Leaving the real scan list in place lets Amap/Baidu/Tencent (and the risk
+                    // control in apps like 云闪付/UnionPay) reverse the real WiFi position and
+                    // override the spoofed GPS, so surface the failure in diagnostics.
+                    wifiState = "scan-replace-failed";
                     HookEntry.log("getScanResults replace failed: " + t);
                 }
             }
@@ -198,6 +201,19 @@ final class SystemHooks {
         });
         wifiState = n > 0 ? "ok" : "no-methods";
         HookEntry.log("wifi hooks installed: " + n + " via " + wifi.getClassLoader());
+    }
+
+    /**
+     * An empty value of the same shape the caller expects. Android 8–14 return a bare
+     * {@code List<ScanResult>}; Android 15+ wrap it in {@code ParceledListSlice<ScanResult>}
+     * (com.android.modules.utils), whose only list constructor takes {@code List}, not
+     * {@code ArrayList} – matching {@code ArrayList} throws NoSuchMethodError and the block silently
+     * fails. Construct it against {@code List.class} so scan suppression works on Android 15/16.
+     */
+    private static Object emptyLike(Object res) throws Exception {
+        if (res instanceof List) return new ArrayList<>();
+        return XposedHelpers.newInstance(res.getClass(), new Class[]{List.class},
+                java.util.Collections.emptyList());
     }
 
     /**
