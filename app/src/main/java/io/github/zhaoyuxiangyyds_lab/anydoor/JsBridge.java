@@ -85,14 +85,29 @@ public class JsBridge {
         try {
             o.put("moduleActive", ModuleStatus.isModuleActive());
             Config.config(act);
-            o.put("prefsWorldReadable", Config.isWorldReadable());
+            o.put("version", BuildInfo.VERSION);
+            o.put("protocol", ConfigSnapshot.PROTOCOL);
+            o.put("configRevision", Config.revision());
+            o.put("mirrorRevision", Config.mirrorRevision());
+            o.put("mirrorError", Config.mirrorError());
             o.put("root", RootShell.available());
             RootShell.Result ap = RootShell.run("appops get " + Keys.PKG + " android:mock_location");
             o.put("mockAllowed", ap.out.contains("allow"));
             o.put("overlay", Settings.canDrawOverlays(act));
+            long revisionAtProbeStart = Config.revision();
             Bundle probe = probeSystemHook();
+            o.put("probeRevisionStart", revisionAtProbeStart);
+            o.put("configRevision", Config.revision());
             o.put("systemHook", probe != null);
             if (probe != null) {
+                o.put("sysProtocol", probe.getInt("protocol", 0));
+                o.put("sysVersion", probe.getString("version", "unknown"));
+                o.put("sysRevision", probe.getLong("revision", 0));
+                o.put("sysError", probe.getString("error", ""));
+                o.put("sysLease", probe.getBoolean("lease", false));
+                o.put("liveHook", probe.getBoolean("liveHook", false));
+                o.put("deliveries", probe.getLong("deliveries", 0));
+                o.put("lastDelivery", probe.getLong("lastDelivery", 0));
                 o.put("sysPrefs", probe.getBoolean("prefs", false));
                 o.put("sysChannel", probe.getString("channel", ""));
                 o.put("sysStarted", probe.getBoolean("started", false));
@@ -110,7 +125,9 @@ public class JsBridge {
             }
             o.put("sdk", Build.VERSION.SDK_INT);
             o.put("device", Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
-            o.put("mockError", Config.app(act).getString(Keys.MOCK_ERROR, ""));
+            SpoofService service = SpoofService.instance;
+            o.put("service", service == null ? new JSONObject().put("running", false) : service.status());
+            o.put("mockError", service == null ? Config.app(act).getString(Keys.MOCK_ERROR, "") : service.status().optString("mockError", ""));
         } catch (Exception e) {
             try {
                 o.put("error", String.valueOf(e));
@@ -118,6 +135,18 @@ public class JsBridge {
             }
         }
         return o.toString();
+    }
+
+    @JavascriptInterface
+    public String diagnosticReport() {
+        try {
+            JSONObject o = new JSONObject(checkEnv());
+            JSONObject full = o.optJSONObject("service"), safe = new JSONObject();
+            if (full != null) for (String k : new String[]{"running", "providers", "gpsReady", "networkReady", "providerNote", "mockError", "lastPush"}) safe.put(k, full.opt(k));
+            o.put("service", safe);
+            o.put("generatedAt", System.currentTimeMillis());
+            return o.toString(2);
+        } catch (Exception e) { return "诊断导出失败: " + e; }
     }
 
     /**
@@ -145,13 +174,15 @@ public class JsBridge {
         sb.append(r.out.contains("ov_ok") ? "✓ 已授予悬浮窗权限\n" : "✗ 悬浮窗权限失败: " + r.err + "\n");
         r = RootShell.run("ls /data/adb/lspd/cli >/dev/null 2>&1 && echo yes");
         if (r.out.contains("yes")) {
-            r = RootShell.run("sh /data/adb/lspd/cli modules enable " + Keys.PKG + " 2>&1; "
-                    + "sh /data/adb/lspd/cli scope set " + Keys.PKG + " android/0 com.android.phone/0 com.android.bluetooth/0 " + Keys.PKG + "/0 2>&1");
-            sb.append("Vector: ").append(r.out.isEmpty() ? r.err : r.out).append("\n");
-            sb.append("✓ 已启用模块并设置作用域 (system / phone / bluetooth)，重启手机后生效\n");
+            // Do not replace the user's entire scope list (which may contain WeChat/DingTalk).
+            r = RootShell.run("sh /data/adb/lspd/cli modules enable " + Keys.PKG + " 2>&1");
+            sb.append(r.ok() ? "✓ 已请求启用模块\n" : "✗ 启用模块失败: " + r.out + " " + r.err + "\n");
+            sb.append("· 请在框架管理器确认系统框架、电话、蓝牙作用域；保留已有应用勾选。升级后需要重启手机。\n");
         } else {
             sb.append("· 未检测到 Vector CLI，请在 LSPosed 管理器里手动启用模块并勾选「系统框架」「电话」「蓝牙」\n");
         }
+        String syncError = Config.syncNow(act);
+        sb.append(syncError.isEmpty() ? "✓ 配置快照已写入，刷新环境检查确认系统是否读到\n" : "✗ " + syncError + "\n");
         return sb.toString().trim();
     }
 
@@ -164,7 +195,8 @@ public class JsBridge {
 
     @JavascriptInterface
     public void setTarget(double lat, double lng) {
-        Config.config(act).edit().putString(Keys.LAT, String.valueOf(lat)).putString(Keys.LNG, String.valueOf(lng)).commit();
+        if (!Double.isFinite(lat) || !Double.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
+        Config.commit(Config.config(act).edit().putString(Keys.LAT, String.valueOf(lat)).putString(Keys.LNG, String.valueOf(lng)));
         SpoofService s = SpoofService.instance;
         if (s != null && SpoofService.isRunning()) {
             s.setBase(lat, lng);
@@ -179,7 +211,7 @@ public class JsBridge {
             if (Build.VERSION.SDK_INT >= 26) act.startForegroundService(i);
             else act.startService(i);
         } else {
-            Config.config(act).edit().putBoolean(Keys.STARTED, false).commit();
+            Config.commit(Config.config(act).edit().putBoolean(Keys.STARTED, false));
             act.startService(i);
         }
     }
@@ -300,7 +332,7 @@ public class JsBridge {
     public void setSteps(double n) {
         SpoofService s = SpoofService.instance;
         if (s != null) s.setSteps(n);
-        else Config.config(act).edit().putString(Keys.STEPS, String.valueOf(Math.floor(Math.max(0, n)))).commit();
+        else Config.commit(Config.config(act).edit().putString(Keys.STEPS, String.valueOf(Math.floor(Math.max(0, n)))));
     }
 
     // ------------------------------------------------------------------ privacy
@@ -325,7 +357,7 @@ public class JsBridge {
                     .putBoolean(Keys.ID_SPOOF, true).putBoolean(Keys.BT_BLOCK, true).putBoolean(Keys.SENSOR_BLOCK, true);
             if (Config.num(Config.config(act), Keys.JITTER, 0) < 2) e.putString(Keys.JITTER, "3");
         }
-        e.commit();
+        Config.commit(e);
     }
 
     @JavascriptInterface
@@ -367,7 +399,7 @@ public class JsBridge {
         for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER}) {
             try {
                 Location l = lm.getLastKnownLocation(p);
-                if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+                if (l != null && !l.isFromMockProvider() && (best == null || l.getTime() > best.getTime())) best = l;
             } catch (Throwable ignored) {
             }
         }
@@ -410,6 +442,7 @@ public class JsBridge {
             @Override
             public void run() {
                 try {
+                    if (SpoofService.isRunning()) { cb(id, err("请先停止模拟，再获取真实位置")); return; }
                     LocationManager lm = (LocationManager) act.getSystemService(Context.LOCATION_SERVICE);
                     Location best = lastKnown(lm);
                     // Nothing cached (common indoors, or right after boot): actively ask for one fix.

@@ -1,0 +1,1 @@
+package android.os; public class SystemClock { public static long tick=100000; public static long uptimeMillis(){return tick;} public static long elapsedRealtime(){return tick;} public static long elapsedRealtimeNanos(){return tick*1000000;} }

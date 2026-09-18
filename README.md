@@ -11,10 +11,13 @@
 
 <p align="center"><b>简体中文</b> · <a href="README_EN.md">English</a></p>
 
-> 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。
-> 在系统服务内部改写每个 App 收到的定位，并抹掉「模拟位置」标记；室内没有 GPS 信号也能持续输出坐标。
+**1.3.3 兼容性修复验证版**：[下载 APK 与升级说明](../../releases/tag/v1.3.3) · [完整更新记录](CHANGELOG.md)。本版修复配置同步、定位源启停和环境检查，移除对旧 NSP 共享偏好的依赖。已完成主机回归与 APK 构建验证，**尚未进行 Android 16／微信／钉钉真机回归**，请先在测试设备验证。
 
-任意门是为了替代那些「搜不出地点、没有地图、只能填经纬度」的老式虚拟定位工具而写的。它把定位改在 `system_server` 里，所以**对所有 App 全局生效**，开关随时切换、无需每次重启。
+
+> 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。
+> 在系统服务内部改写通过系统定位接口下发的位置，并抹掉「模拟位置」标记；室内没有 GPS 信号也能持续输出坐标。
+
+任意门是为了替代那些「搜不出地点、没有地图、只能填经纬度」的老式虚拟定位工具而写的。它把定位改在 `system_server` 里，面向使用系统定位接口的应用，开关随时切换、无需每次重启。
 
 <p align="center">
   <img src="docs/screenshots/01-map.png" width="30%" alt="地图选点" />
@@ -45,7 +48,7 @@
 
 | 项目 | 要求 |
 |------|------|
-| 系统 | Android 8.1 ~ 16（SDK 27+）。已在 **华为 EMUI 9 / Android 9** 真机实测通过；Android 12 ~ 16 定位架构一致，代码已做向前兼容（测试定位源在 API 31+ 使用 `ProviderProperties` 新接口），预期可用但尚未在 15/16 真机验证 |
+| 系统 | Android 8.1 ~ 16（SDK 27+）。已在 **华为 EMUI 9 / Android 9** 真机实测通过；较新版本使用 API 31+ 的 `ProviderProperties`；1.3.3 尚未进行各安卓版本真机回归，OEM 与目标应用兼容性需实测 |
 | Root | 需要 Root |
 | Xposed 框架 | **LSPosed** / **Vector**(JingMatrix) 等任意 Xposed 框架 |
 | 架构 | 纯 Java，无 native，各架构通用 |
@@ -65,7 +68,7 @@
 - ✅ **系统框架**（`android` / `system`）— 全局生效的关键
 - ✅ **电话和通讯录**（`com.android.phone`）— 屏蔽基站定位、伪造 IMEI 等标识用
 - ✅ **蓝牙**（`com.android.bluetooth`）— 隐私加固里屏蔽蓝牙扫描用（可选）
-- ✅ **任意门自身**（`io.github.zhaoyuxiangyyds_lab.anydoor`）— 强化模式
+- ✅ **任意门自身**（`io.github.zhaoyuxiangyyds_lab.anydoor`）— 模块自检（目标应用的强化模式需单独勾选）
 
 > 命令行框架（如 Vector CLI）可执行：
 > ```sh
@@ -73,10 +76,10 @@
 > ```
 
 ### 3. 重启一次手机
-系统框架 hook 需要重启才能注入 `system_server`。**这一步只需做一次**，之后开关模拟无需再重启。
+系统框架 hook 需要重启才能注入 `system_server`。**首次启用和每次升级都需要完整重启**，之后开关模拟无需再重启。
 
 ### 4. 打开 App，进入「环境检查」
-确认各项均为 ✓。若「模拟位置权限」「悬浮窗权限」未授予，点 **一键 Root 配置** 即可。
+确认应用／系统模块版本一致、系统配置已同步，并在目标应用请求定位后观察下发计数。尚未请求定位时，下发计数为 0 不代表失败。若「模拟位置权限」「悬浮窗权限」未授予，点 **一键 Root 配置** 即可。
 
 ### 5. 配置高德 Key（中国搜索地点必需）
 中国网络下地点搜索走高德 REST API，需要一个**免费**的高德 Key（约 2 分钟，一次配置永久有效）：
@@ -93,7 +96,7 @@
 ## 📖 使用方法
 
 1. **选位置**：顶部搜索地点、粘贴坐标 `31.23, 121.47`、或直接点地图。
-2. **开始模拟**：点底部 **开始模拟**。此后任何 App 看到的都是这个位置。
+2. **开始模拟**：点底部 **开始模拟**。随后到环境检查确认同步，并在目标应用请求定位。
 3. **微调 / 移动**：
    - 右侧 **方向键**（十字图标）：按固定步长微调
    - 右侧 **摇杆**（圆点图标）：弹出悬浮摇杆，可在其它 App 上层实时走动
@@ -113,7 +116,7 @@
 1.3.1 起环境检查多了一项「系统侧读取配置」——它是 `system_server` 自己汇报回来的：能不能读到配置文件、有没有读到「模拟中」，底部还列出各个 hook 的命中数（`last / report / accept / wifi`）。反馈问题时请把这一屏截图发出来。
 
 **Q：环境检查里「系统侧读取配置」显示 ✕，或全部 ✓ 却毫无效果 / 高德刚打开一闪就跳回真实位置？**
-根因是**系统服务（`system_server`）读不到本应用的配置**——部分框架（旧版 LSPosed、Vector）不支持 `xposedsharedprefs` 世界可读，Hook 注入了却永远读不到「已开始」，于是什么都没改，真实定位照常下发。1.3.2 起：只要有 Root，本应用会把配置额外写一份到 `/data/system/anydoor_prefs.json`（`system_server` 一定读得到），Hook 自动走这条 root 回退通道。**请确保「Root 权限」为 ✓ 并重启一次**；此后「系统侧读取配置」会显示「经 root 回退通道」。
+不能仅凭这条现象断定根因。1.3.3 会区分模块版本不一致、配置读取失败、配置版本落后、心跳过期和定位源错误。先完整重启，再点击“一键 Root 配置”主动同步，开始模拟并在目标应用请求位置。仍有问题时使用“复制诊断”，同时提供目标应用版本和具体失败页面。Root 文件写入成功也不代表每台 ROM 的系统进程必然能读取，读取结果以系统探针为准。
 
 **Q：高德地图 / 微信 / 用高德 SDK 的 App 一直拿不到模拟位置，或报 `errorCode=8`、`LatLng is error#0802`？**
 请升级到 1.3.1 并重启一次手机。旧版有两个问题：① 伪造的 GPS 定位没带 `satellites` 卫星数，高德/百度/腾讯 SDK 会把这种「gps 定位」直接判定为模拟并丢弃；② 强化模式下 hook 了 `Location.hasAltitude()`，在 Android 12+ 上会打乱 `Location` 的 Parcel 布局，高德 `AMapLocation` 反序列化后经纬度变成乱码（就是 #0802）。另外 Android 11+ 的 WiFi 服务在单独的 APEX 类加载器里，旧版根本没 hook 到，WiFi 定位会泄露真实位置——1.3.1 已修。
@@ -181,16 +184,31 @@ bash build.sh
 
 | 层 | 说明 |
 |----|------|
-| **系统层**（`SystemHooks`） | hook `LocationManagerService.getLastLocation` 与定位下发路径（Android ≤ 11：`Receiver.callLocationChangedLocked`；Android 12+：`LocationProviderManager.onReportLocation` + 每个注册的 `acceptLocationChange` 兜底），把所有 App 的定位替换为目标坐标，构造全新 `Location`（不带 mock 标记，gps 定位附带 `satellites / maxCn0 / meanCn0`，否则定位 SDK 会当成模拟）。可选屏蔽 WiFi（Android 11+ 通过 `SystemServiceManager.startService` 抓到 wifi APEX 的类加载器）/ 基站 / GNSS。 |
+| **系统层**（`SystemHooks`） | Hook 最后位置与逐接收者下发：Android ≤ 11 使用 Receiver，Android 12+ 使用各 Registration 的 `acceptLocationChange`。不再在 `onReportLocation` 提前替换系统缓存；保留原始 mock 缓存标记供系统停止测试源时清理。 |
 | **电话层**（`PhoneHooks`） | hook `PhoneInterfaceManager`，对普通 App 隐藏基站信息。 |
 | **应用层**（`AppHooks`） | 对加入作用域的 App 额外 hook `Location` getter（仅 gps/network/fused/passive 来源）、`isFromMockProvider`、`getLastKnownLocation` 等，二次兜底。不 hook `hasAltitude()` 之类决定 Parcel 布局的方法。 |
 | **驱动**（`SpoofService`） | 前台服务，用 `addTestProvider` + `setTestProviderLocation` 持续推送坐标，实现路线移动、摇杆、随机漂移；室内无信号也有定位。 |
-| **配置** | 通过 `xposedsharedprefs` 世界可读的 SharedPreferences 在 App 与 Hook 间共享。 |
+| **配置** | 私有 SharedPreferences + 标准 XSharedPreferences API；Root 原子快照供系统读取，受定位权限约束的系统状态桥供作用域内进程读取。带协议、递增版本和 15 秒运行心跳有效期，不再声明 `xposedsharedprefs`。 |
 | **界面** | `WebView` 承载单页应用（`assets/web/`），`JsBridge` 做 JS↔Java 桥接；地图用 Leaflet + 高德瓦片。 |
 
 > 兼容性注意：不同 Xposed 分支交付 `system_server` 的包名可能是 `android` 或 `system`，本项目两者都处理。
 
 ---
+
+
+### 1.3.3 升级与反馈
+
+- 覆盖安装后**完整重启手机**，再打开任意门。首次升级会在后台迁移旧 NSP 设置／收藏；按提示授予 Root。迁移失败可重试，原文件保留，不自动恢复旧的“模拟中”状态。
+- 请在手机主用户安装任意门并控制全局定位。目标应用分身／工作资料需要按对应用户配置作用域；本版尚未对这些环境真机验证。
+- 设置了豁免应用时，驱动会停用全局测试定位源，避免覆盖豁免应用的真实来源。这时其他应用依赖实际系统定位回调，室内可能需要等待。
+- “系统模块响应”“配置同步”“下发计数”分别表示不同阶段。即使计数增加，也不能保证某个微信或钉钉页面最终采用该坐标。
+- 反馈请附“环境检查 → 复制诊断”、目标应用版本、失败表现（真实位置／一直定位／环境异常）及是否分身。诊断不包含坐标、收藏、设备伪造标识和高德 Key。
+
+### 开发者验证
+
+`python tests/run.py`：需要 JDK 17、Node、Python、Android SDK 与 Bash；可通过 `ANDROID_SDK_ROOT`、`ANDROID_JAR`、`TEST_BASH` 配置路径。测试依赖固定版本 JSON／KXML 并验证 SHA-256。测试输出在 `build/tests/`，不提交产物。详见 [测试说明](tests/README.md)。
+
+本项目作者：[zhaoyuxiangyydslab](https://github.com/zhaoyuxiangyyds-lab)。本版修复与测试由 Codex 协助。
 
 ## 🌟 支持一下
 

@@ -1,0 +1,1 @@
+package android.app; public class AndroidAppHelper { public static android.content.Context currentApplication(){return null;} }

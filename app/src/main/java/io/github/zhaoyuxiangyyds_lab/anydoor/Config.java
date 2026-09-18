@@ -2,108 +2,99 @@ package io.github.zhaoyuxiangyyds_lab.anydoor;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.SystemClock;
 import android.util.Base64;
-import android.util.Log;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 import org.json.JSONObject;
+import java.util.*;
+import java.util.concurrent.*;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Random;
-
-/** App-side access to the world-readable "config" prefs (read by hooks) and the private "app" prefs. */
+/** Private app storage + standard XSharedPreferences and an atomic root snapshot. No NSP dependency. */
 public final class Config {
-    private static final String TAG = "AnyDoor";
-    private static boolean worldReadable = true;
-
-    /**
-     * World-readable mirror of the config that system_server can always read. Some frameworks
-     * (old LSPosed / Vector) do not honour {@code xposedsharedprefs}, so the hook's
-     * XSharedPreferences cannot open the real prefs file and nothing ever activates. As the app
-     * has root, we additionally copy the config as JSON to /data/system (system_data_file, which
-     * system_server is always allowed to read) after every change; SpoofState falls back to it.
-     */
     public static final String MIRROR_PATH = "/data/system/anydoor_prefs.json";
-
-    private static final ExecutorService IO = Executors.newSingleThreadExecutor();
-    private static SharedPreferences.OnSharedPreferenceChangeListener mirrorListener;
+    private static final ScheduledExecutorService IO = Executors.newSingleThreadScheduledExecutor();
     private static SharedPreferences cfgPrefs;
-    private static volatile boolean mirrorPending;
-
+    private static long revision;
+    private static long requested, completed;
+    private static boolean worker;
+    private static volatile String mirrorError = "尚未同步";
+    private static volatile long mirrorRevision;
     private Config() {}
 
-    @SuppressWarnings("deprecation")
-    public static SharedPreferences config(Context c) {
-        SharedPreferences p;
-        try {
-            p = c.getSharedPreferences(Keys.CONFIG, Context.MODE_WORLD_READABLE);
-            worldReadable = true;
-        } catch (SecurityException e) {
-            worldReadable = false;
-            Log.w(TAG, "MODE_WORLD_READABLE refused – framework inactive?");
-            p = c.getSharedPreferences(Keys.CONFIG, Context.MODE_PRIVATE);
+    public static synchronized SharedPreferences config(Context c) {
+        if (cfgPrefs == null) {
+            cfgPrefs = c.getSharedPreferences(Keys.CONFIG, Context.MODE_PRIVATE);
+            revision = cfgPrefs.getLong(ConfigSnapshot.REVISION, 0);
         }
-        installMirror(p);
-        return p;
+        return cfgPrefs;
     }
+    public static SharedPreferences app(Context c) { return c.getSharedPreferences(Keys.APP, Context.MODE_PRIVATE); }
 
-    /**
-     * Register a one-shot listener that re-writes the root mirror on every config change. The
-     * SharedPreferences instance is process-global per file, so this single listener catches
-     * writes from the Activity and the Service alike.
-     */
-    private static synchronized void installMirror(SharedPreferences p) {
-        if (mirrorListener != null || p == null) return;
-        cfgPrefs = p;
-        mirrorListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
-            @Override
-            public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
-                mirror();
-            }
-        };
+    /** All config mutations go through this method: values and version are committed together. */
+    public static synchronized boolean commit(SharedPreferences.Editor e) {
+        revision = Math.max(revision + 1, System.currentTimeMillis());
+        boolean ok = e.putLong(ConfigSnapshot.REVISION, revision).putInt(ConfigSnapshot.SCHEMA, 1)
+                .putLong(ConfigSnapshot.WALL, System.currentTimeMillis())
+                .putLong(ConfigSnapshot.ELAPSED, SystemClock.elapsedRealtime()).commit();
+        if (!ok) mirrorError = "保存配置失败";
+        mirror();
+        return ok;
+    }
+    public static synchronized long revision() { return revision; }
+    public static String mirrorError() { return mirrorError; }
+    public static long mirrorRevision() { return mirrorRevision; }
+
+    public static synchronized void mirror() {
+        requested++;
+        if (worker) return;
+        worker = true;
+        IO.schedule(Config::writeMirror, 100, TimeUnit.MILLISECONDS);
+    }
+    private static void writeMirror() {
+        long request;
+        JSONObject snapshot;
+        synchronized (Config.class) {
+            request = requested;
+            snapshot = cfgPrefs == null ? null : toJson(cfgPrefs);
+        }
         try {
-            p.registerOnSharedPreferenceChangeListener(mirrorListener);
-        } catch (Throwable t) {
-            mirrorListener = null;
+            if (android.os.Process.myUid() / 100000 != 0) throw new IllegalStateException("请在手机主用户中使用任意门控制全局定位");
+            if (snapshot == null) throw new IllegalStateException("配置未初始化");
+            String b64 = Base64.encodeToString(snapshot.toString().getBytes("UTF-8"), Base64.NO_WRAP);
+            RootShell.Result r = RootShell.run(MirrorCommand.build(MIRROR_PATH, b64,
+                    System.currentTimeMillis() / 1000 + 12, System.nanoTime()));
+            if (!r.ok()) throw new IllegalStateException("Root 同步失败 (" + r.code + "): " + r.err);
+            mirrorRevision = snapshot.optLong(ConfigSnapshot.REVISION, 0);
+            mirrorError = "";
+        } catch (Exception e) { mirrorError = e.toString(); }
+        synchronized (Config.class) {
+            completed = request;
+            Config.class.notifyAll();
+            if (requested > request) IO.schedule(Config::writeMirror, 100, TimeUnit.MILLISECONDS);
+            else {
+                worker = false;
+                // Retry transient authorization/IO failures, but do not keep an active lease alive here.
+                if (!mirrorError.isEmpty() && android.os.Process.myUid() / 100000 == 0) IO.schedule(Config::mirror, 5000, TimeUnit.MILLISECONDS);
+            }
         }
     }
-
-    /** Re-write the world-readable JSON mirror via root; coalesces bursts of edits into one write. */
-    public static void mirror() {
-        if (mirrorPending) return;
-        mirrorPending = true;
-        IO.execute(new Runnable() {
-            @Override
-            public void run() {
-                mirrorPending = false;
-                try {
-                    if (cfgPrefs == null) return;
-                    Thread.sleep(120);   // let a burst of edits settle into a single write
-                    String json = toJson(cfgPrefs).toString();
-                    String b64 = Base64.encodeToString(json.getBytes("UTF-8"), Base64.NO_WRAP);
-                    RootShell.run("echo " + b64 + " | base64 -d > " + MIRROR_PATH
-                            + " && chmod 644 " + MIRROR_PATH
-                            + "; chcon u:object_r:system_data_file:s0 " + MIRROR_PATH + " 2>/dev/null; true");
-                } catch (Throwable ignored) {
-                }
+    /** Called off the UI thread by explicit repair and diagnostics. */
+    public static String syncNow(Context c) {
+        config(c);
+        synchronized (Config.class) {
+            mirror(); long target = requested, end = SystemClock.elapsedRealtime() + 14000;
+            while (completed < target) {
+                long left = end - SystemClock.elapsedRealtime();
+                if (left <= 0) return "配置同步超时";
+                try { Config.class.wait(left); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return "配置同步被中断"; }
             }
-        });
-    }
-
-    public static boolean isWorldReadable() {
-        return worldReadable;
-    }
-
-    public static SharedPreferences app(Context c) {
-        return c.getSharedPreferences(Keys.APP, Context.MODE_PRIVATE);
+            return mirrorError;
+        }
     }
 
     public static void ensureDefaults(Context c) {
         SharedPreferences p = config(c);
         SharedPreferences.Editor e = p.edit();
+        if (!p.contains(Keys.STARTED)) e.putBoolean(Keys.STARTED, false);
         if (!p.contains(Keys.SEED)) e.putLong(Keys.SEED, new Random().nextLong());
         if (!p.contains(Keys.LAT)) e.putString(Keys.LAT, "39.908722").putString(Keys.LNG, "116.397499");
         if (!p.contains(Keys.ALT)) e.putString(Keys.ALT, "50");
@@ -126,7 +117,7 @@ public final class Config {
         if (!p.contains(Keys.ID_SPOOF)) e.putBoolean(Keys.ID_SPOOF, true);
         if (!p.contains(Keys.BT_BLOCK)) e.putBoolean(Keys.BT_BLOCK, true);
         if (!p.contains(Keys.SENSOR_BLOCK)) e.putBoolean(Keys.SENSOR_BLOCK, true);
-        e.commit();
+        commit(e);
         ensureIdentity(c, false);
     }
 
@@ -142,7 +133,7 @@ public final class Config {
             String iccid19 = "8986" + mnc[r.nextInt(mnc.length)] + digits(r, 13);
             String[] prefix = {"133", "135", "136", "137", "138", "139", "150", "151", "152", "158", "159",
                     "176", "177", "180", "181", "182", "185", "186", "187", "188", "189"};
-            p.edit()
+            commit(p.edit()
                     .putString(Keys.FAKE_IMEI, imei14 + luhn(imei14))
                     .putString(Keys.FAKE_MEID, "A0" + hex(r, 12).toUpperCase())
                     .putString(Keys.FAKE_IMSI, imsi)
@@ -150,7 +141,7 @@ public final class Config {
                     .putString(Keys.FAKE_ANDROID_ID, hex(r, 16))
                     .putString(Keys.FAKE_SERIAL, alnum(r, 16))
                     .putString(Keys.FAKE_PHONE, prefix[r.nextInt(prefix.length)] + digits(r, 8))
-                    .commit();
+                    );
         }
         return identity(c);
     }
@@ -217,6 +208,7 @@ public final class Config {
         Iterator<String> it = o.keys();
         while (it.hasNext()) {
             String k = it.next();
+            if (k.startsWith("_")) continue;
             Object v = o.opt(k);
             if (v == null || v == JSONObject.NULL) {
                 e.remove(k);
@@ -230,7 +222,7 @@ public final class Config {
                 e.putString(k, String.valueOf(v));
             }
         }
-        e.commit();
+        commit(e);
     }
 
     public static JSONObject toJson(SharedPreferences p) {

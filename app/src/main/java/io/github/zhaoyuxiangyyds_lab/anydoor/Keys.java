@@ -62,5 +62,6 @@ public final class Keys {
     public static final String FIRST_RUN = "first_run";
 
     public static final int DEFAULT_INTERVAL = 1000;
+    public static final String STATE_PROVIDER = "anydoor.state";
     public static final String PROBE_PROVIDER = "anydoor.probe";
 }

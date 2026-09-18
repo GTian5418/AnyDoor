@@ -1,0 +1,16 @@
+const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path');
+const source=fs.readFileSync(path.join(__dirname,'../app/src/main/assets/web/app.js'),'utf8');
+eval(source.slice(source.indexOf('function configDiagnosis('),source.indexOf('async function renderEnv(')));
+const good={systemHook:true,protocol:1,sysProtocol:1,version:'1.3.3',sysVersion:'1.3.3',sysPrefs:true,started:true,sysStarted:true,configRevision:10,sysRevision:10,sysChannel:'root'};
+assert.equal(configDiagnosis(good)[0],'ok');
+assert.equal(configDiagnosis({...good,systemHook:false})[0],'bad');
+assert.match(configDiagnosis({...good,sysProtocol:undefined,sysVersion:undefined})[1],/重启/);
+assert.doesNotMatch(configDiagnosis({...good,sysProtocol:undefined})[1],/Root.*失败/);
+assert.equal(configDiagnosis({...good,sysVersion:'1.3.2'})[0],'bad');
+assert.equal(configDiagnosis({...good,started:false})[0],'bad');
+assert.equal(configDiagnosis({...good,sysStarted:false})[0],'bad');
+assert.equal(configDiagnosis({...good,sysRevision:9})[0],'warn');
+assert.equal(configDiagnosis({...good,sysPrefs:false})[0],'bad');
+assert.equal(configDiagnosis({...good,started:false,sysStarted:false})[0],'ok');
+assert.doesNotMatch(configDiagnosis(good)[1],/全局生效/);
+console.log('diagnostics: 11 assertions passed');

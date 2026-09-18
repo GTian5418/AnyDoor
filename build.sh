@@ -17,8 +17,8 @@ echo "[2/5] aapt2 link"
   -A "$SRC/assets" --java "$OUT/gen" --auto-add-overlay "$OUT/res.zip"
 echo "[3/5] javac"
 find "$SRC/java" "$OUT/gen" -name '*.java' > "$OUT/sources.txt"
-javac -source 1.8 -target 1.8 -encoding UTF-8 -nowarn -Xlint:-options \
-  -bootclasspath "$PLATFORM" -cp "libs/api-82.jar" -d "$OUT/classes" @"$OUT/sources.txt"
+javac --release 8 -encoding UTF-8 -nowarn -Xlint:-options \
+  -cp "$PLATFORM;libs/api-82.jar" -d "$OUT/classes" @"$OUT/sources.txt"
 echo "[4/5] d8"
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
 "$BT/d8.bat" --release --min-api 27 --lib "$PLATFORM" --output "$OUT/dex" @"$OUT/classes.txt"

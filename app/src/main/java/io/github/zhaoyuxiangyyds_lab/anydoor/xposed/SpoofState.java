@@ -1,156 +1,105 @@
 package io.github.zhaoyuxiangyyds_lab.anydoor.xposed;
 
+import android.app.AndroidAppHelper;
+import android.content.Context;
 import android.location.Location;
+import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.SystemClock;
-
-import io.github.zhaoyuxiangyyds_lab.anydoor.Config;
-import io.github.zhaoyuxiangyyds_lab.anydoor.GeoMath;
-import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
-
+import io.github.zhaoyuxiangyyds_lab.anydoor.*;
 import org.json.JSONObject;
-
-import java.io.File;
-import java.io.FileInputStream;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
-
+import java.io.*;
+import java.util.*;
 import de.robv.android.xposed.XSharedPreferences;
-import de.robv.android.xposed.XposedBridge;
 
-/** Hook-side view of the world-readable config. Reloads at most every 300 ms. */
+/** Reads validated snapshots, never equates File.canRead() with successful framework IPC. */
 final class SpoofState {
-    private static final Set<String> ALWAYS_EXEMPT = new HashSet<>(Arrays.asList(
-            Keys.PKG, "com.android.location.fused"));
-
-    private final XSharedPreferences prefs;
-    private long lastReload;
-    private boolean available;
-
-    // Root-written fallback mirror, used when the framework's shared-prefs support fails and
-    // system_server cannot read the real prefs file. Values are stored as strings.
-    private final File mirror = new File(Config.MIRROR_PATH);
-    private volatile Map<String, String> fb = new HashMap<>();
-    private volatile boolean fbLoaded;
-    private long fbMtime;
-
-    SpoofState() {
-        XSharedPreferences p = null;
-        try {
-            p = new XSharedPreferences(Keys.PKG, Keys.CONFIG);
-            p.makeWorldReadable();
-            available = p.getFile() != null && p.getFile().canRead();
-        } catch (Throwable t) {
-            XposedBridge.log("AnyDoor: cannot open prefs: " + t);
-        }
-        prefs = p;
+    private static final Set<String> ALWAYS_EXEMPT = new HashSet<>(Arrays.asList(Keys.PKG, "com.android.location.fused"));
+    private XSharedPreferences prefs;
+    private long lastReload = -1000, lastOpen = -10000, newestRevision;
+    private final boolean systemProcess;
+    private final String clientPackage;
+    private boolean refreshing;
+    private volatile ConfigSnapshot snapshot;
+    private volatile String source = "none", error = "尚未读取";
+    SpoofState() { this(true); }
+    SpoofState(boolean systemProcess) { this(systemProcess, null); }
+    SpoofState(boolean systemProcess, String clientPackage) { this.systemProcess = systemProcess; this.clientPackage = clientPackage; }
+    private boolean clientAllowed() {
+        return systemProcess || clientPackage == null || (!isExempt(clientPackage)
+                && ("com.android.phone".equals(clientPackage) || "com.android.bluetooth".equals(clientPackage) || rawBool(Keys.APP_HOOK, true)));
     }
 
     synchronized void refresh() {
-        if (prefs == null) return;
-        long now = SystemClock.uptimeMillis();
-        if (now - lastReload < 300) return;
-        lastReload = now;
+        long now = SystemClock.elapsedRealtime();
+        if (refreshing || now - lastReload < 300) return;
+        refreshing = true; lastReload = now;
         try {
-            prefs.reload();
-            if (!available) available = prefs.getFile() != null && prefs.getFile().canRead();
-        } catch (Throwable ignored) {
-        }
-        loadFallback();
-    }
-
-    /** Load the root mirror when the real prefs are not readable (or refresh it when it changed). */
-    private void loadFallback() {
-        try {
-            if (!mirror.canRead()) return;
-            long mt = mirror.lastModified();
-            if (fbLoaded && mt == fbMtime) return;
-            byte[] buf = new byte[(int) Math.max(0, mirror.length())];
-            FileInputStream in = new FileInputStream(mirror);
+            ConfigSnapshot best = null;
+            String channel = "none";
+            error = "";
+            // Ordinary scoped processes use the system's selected snapshot. This works even when
+            // SELinux denies access to both the app's private XML and /data/system.
+            if (!systemProcess) {
+                try {
+                    Context c = AndroidAppHelper.currentApplication();
+                    if (c != null) {
+                        LocationManager lm = (LocationManager)c.getSystemService(Context.LOCATION_SERVICE);
+                        Location l = lm.getLastKnownLocation(Keys.STATE_PROVIDER);
+                        if (l != null && Keys.STATE_PROVIDER.equals(l.getProvider()) && l.getExtras() != null
+                                && l.getExtras().getInt("protocol", 0) == ConfigSnapshot.PROTOCOL) {
+                            accept(parse(l.getExtras().getString("state", "{}")), "system");
+                            return;
+                        }
+                    }
+                } catch (Throwable t) { error = "system bridge: " + t.getClass().getSimpleName(); }
+            }
             try {
-                int off = 0, n;
-                while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
-            } finally {
-                in.close();
-            }
-            JSONObject o = new JSONObject(new String(buf, "UTF-8"));
-            Map<String, String> m = new HashMap<>();
-            for (Iterator<String> it = o.keys(); it.hasNext(); ) {
-                String k = it.next();
-                m.put(k, String.valueOf(o.get(k)));
-            }
-            fb = m;                 // atomic swap; readers hold no lock
-            fbMtime = mt;
-            fbLoaded = true;
-        } catch (Throwable ignored) {
+                if (prefs == null && now - lastOpen >= 5000) {
+                    lastOpen = now; prefs = new XSharedPreferences(Keys.PKG, Keys.CONFIG);
+                }
+                if (prefs != null) {
+                    prefs.reload(); best = ConfigSnapshot.from(prefs.getAll());
+                    if (best != null) channel = "prefs";
+                }
+            } catch (Throwable t) { prefs = null; error = "prefs: " + t.getClass().getSimpleName(); }
+            // Independent of XSharedPreferences success. Bounded read, no mtime-only cache, writer renames atomically.
+            try (InputStream in = new FileInputStream(Config.MIRROR_PATH)) {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream(); byte[] buf = new byte[4096]; int n;
+                while ((n = in.read(buf)) != -1) {
+                    if (bytes.size() + n > 262144) throw new IOException("snapshot too large");
+                    bytes.write(buf, 0, n);
+                }
+                ConfigSnapshot root = parse(new String(bytes.toByteArray(), "UTF-8"));
+                if (root != null && (best == null || root.revision >= best.revision)) { best = root; channel = "root"; }
+            } catch (Exception e) { if (best == null) error = "root: " + e.getClass().getSimpleName(); }
+            accept(best, channel);
+        } finally { refreshing = false; }
+    }
+    private void accept(ConfigSnapshot candidate, String channel) {
+        if (candidate == null || candidate.revision < newestRevision) {
+            snapshot = null; source = "none";
+            if (error.isEmpty()) error = "配置缺失、格式不兼容或版本倒退";
+            return;
         }
+        newestRevision = candidate.revision; snapshot = candidate; source = channel; error = "";
     }
-
-    /** True while the real prefs file is directly readable (no fallback needed). */
-    private boolean prefsOk() {
-        return available && prefs != null;
+    private static ConfigSnapshot parse(String json) throws Exception {
+        JSONObject o = new JSONObject(json); Map<String,Object> m = new HashMap<>();
+        for (Iterator<String> it = o.keys(); it.hasNext();) { String k = it.next(); m.put(k, o.get(k)); }
+        return ConfigSnapshot.from(m);
     }
-
-    private boolean rawBool(String k, boolean def) {
-        if (prefsOk()) return prefs.getBoolean(k, def);
-        String v = fb.get(k);
-        return v == null ? def : Boolean.parseBoolean(v);
-    }
-
-    private String rawStr(String k, String def) {
-        if (prefsOk()) return prefs.getString(k, def);
-        String v = fb.get(k);
-        return v == null ? def : v;
-    }
-
-    private int rawInt(String k, int def) {
-        if (prefsOk()) return prefs.getInt(k, def);
-        String v = fb.get(k);
-        if (v == null) return def;
-        try {
-            return (int) Double.parseDouble(v);
-        } catch (NumberFormatException e) {
-            return def;
-        }
-    }
-
-    private long rawLong(String k, long def) {
-        if (prefsOk()) return prefs.getLong(k, def);
-        String v = fb.get(k);
-        if (v == null) return def;
-        try {
-            return Long.parseLong(v);
-        } catch (NumberFormatException e) {
-            try {
-                return (long) Double.parseDouble(v);
-            } catch (NumberFormatException e2) {
-                return def;
-            }
-        }
-    }
-
-    boolean started() {
-        refresh();
-        return rawBool(Keys.STARTED, false);
-    }
-
-    /** Config is readable through some channel (real prefs or the root mirror). */
-    boolean configReadable() {
-        refresh();
-        return prefsOk() || fbLoaded;
-    }
-
-    /** Which channel the hook is reading config through, for the app's environment check. */
-    String channel() {
-        refresh();
-        if (prefsOk()) return "prefs";
-        if (fbLoaded) return "root";
-        return "none";
-    }
+    String snapshotJson() { refresh(); ConfigSnapshot s = snapshot; return s == null ? "{}" : new JSONObject(s.values).toString(); }
+    long revision() { refresh(); ConfigSnapshot s = snapshot; return s == null ? 0 : s.revision; }
+    String error() { refresh(); return error; }
+    boolean leaseValid() { refresh(); ConfigSnapshot s = snapshot; return s != null && s.leaseValid(System.currentTimeMillis(), SystemClock.elapsedRealtime()); }
+    boolean started() { refresh(); ConfigSnapshot s = snapshot; return s != null && clientAllowed() && s.started(System.currentTimeMillis(), SystemClock.elapsedRealtime()); }
+    boolean configReadable() { refresh(); return snapshot != null; }
+    String channel() { refresh(); return source; }
+    private boolean rawBool(String k, boolean def) { String v = rawStr(k, null); return v == null ? def : Boolean.parseBoolean(v); }
+    private String rawStr(String k, String def) { ConfigSnapshot s = snapshot; return s == null ? def : s.values.getOrDefault(k, def); }
+    private int rawInt(String k, int def) { try { return Integer.parseInt(rawStr(k, "")); } catch (RuntimeException e) { return def; } }
+    private long rawLong(String k, long def) { try { return Long.parseLong(rawStr(k, "")); } catch (RuntimeException e) { return def; } }
 
     boolean bool(String k, boolean def) {
         refresh();
@@ -185,7 +134,7 @@ final class SpoofState {
 
     /** Privacy hardening master switch – independent of whether location spoofing is started. */
     boolean privacy() {
-        return bool(Keys.PRIVACY, false);
+        return clientAllowed() && bool(Keys.PRIVACY, false);
     }
 
     boolean idSpoof() {
@@ -193,7 +142,7 @@ final class SpoofState {
     }
 
     boolean stepFake() {
-        return bool(Keys.STEP_FAKE, false);
+        return started() && bool(Keys.STEP_FAKE, false);
     }
 
     /** Which fake identifier a telephony/identity getter should return, by method name; null = leave alone. */

@@ -310,7 +310,7 @@ async function toggleSpoof() {
   N.setStarted(S.running);
   updateSheet(); updatePill();
   vib(S.running ? 18 : 10);
-  if (S.running) { toast('已开始 · 全局定位已切换'); addHistory({ name: S.name || '地图选点', addr: S.addr, lat: S.target.lat, lng: S.target.lng }); }
+  if (S.running) { toast('已请求开始 · 可到环境检查确认同步'); addHistory({ name: S.name || '地图选点', addr: S.addr, lat: S.target.lat, lng: S.target.lng }); }
   else toast('已停止');
   setTimeout(refreshStatus, 400);
 }
@@ -462,7 +462,7 @@ async function renderSettings() {
   b.appendChild(sectionTitle('豁免应用（保留真实定位）'));
   const c3 = el('div', 'card');
   const row = el('div', 'row col');
-  row.innerHTML = '<div class="rl"><input type="text" class="wide" id="exempt" placeholder="包名，逗号分隔，如 com.autonavi.minimap"><div class="desc">这些应用不受影响，仍使用真实定位。</div></div>';
+  row.innerHTML = '<div class="rl"><input type="text" class="wide" id="exempt" placeholder="包名，逗号分隔，如 com.autonavi.minimap"><div class="desc">设置后会停用全局测试定位源，保留这些应用的系统定位；其他应用依赖真实定位回调，室内可能等待。</div></div>';
   c3.appendChild(row);
   b.appendChild(c3);
   $('#exempt').value = cfg.exempt || '';
@@ -783,36 +783,43 @@ async function renderPrivacy() {
 }
 
 /* ==== env ==== */
+// Pure diagnostic decision, also exercised by tests. Missing fields mean incompatible protocol, not IO failure.
+function configDiagnosis(e) {
+  if (!e.systemHook) return ['bad', '系统模块未响应，请检查作用域并重启手机'];
+  if (e.sysProtocol !== e.protocol || e.sysVersion !== e.version)
+    return ['bad', `应用 ${e.version || '?'} / 系统模块 ${e.sysVersion || '旧版'}：升级后请完整重启手机`];
+  if (!e.sysPrefs) return ['bad', '系统未读到有效配置：' + (e.sysError || '请点一键 Root 配置后刷新')];
+  if (!!e.started !== !!e.sysStarted) return ['bad', e.started ? '启动状态尚未同步，或服务心跳已过期' : '已停止，但系统仍读到开启状态'];
+  if (!e.configRevision || e.sysRevision < (e.probeRevisionStart || e.configRevision) || e.sysRevision > e.configRevision) return ['warn', '配置正在同步，请稍后刷新；持续不同步请导出诊断'];
+  return ['ok', '系统已确认当前配置（' + (e.sysChannel || 'unknown') + '），' + (e.started ? '模拟开关已同步' : '当前已停止')];
+}
 async function renderEnv() {
   const box = $('#envList'); box.innerHTML = '<div class="empty-state">正在检查…</div>';
   let e;
   try { e = JSON.parse(await N.checkEnv()); } catch (err) { box.innerHTML = '<div class="empty-state">检查失败：' + esc(String(err)) + '</div>'; return; }
   box.innerHTML = '';
-  const items = [
-    ['Root 权限', e.root, e.root ? '已获取 su' : '未获取，无法自动配置，请授予本应用 Root'],
-    ['Xposed 框架模块', e.moduleActive, e.moduleActive ? '模块已被框架加载' : '未激活，请在 LSPosed/Vector 中启用并重启'],
-    ['系统框架 Hook', e.systemHook, e.systemHook ? '系统服务已注入，全局生效' : '未检测到 · 需勾选作用域「android」并重启一次'],
-    ['配置可被读取', e.prefsWorldReadable, e.prefsWorldReadable ? '世界可读，Hook 能读到设置' : '不可读 · 需在模块设置里开启「使用共享偏好」'],
+  const rows = [
+    ['Root 权限', e.root ? 'ok' : 'bad', e.root ? '已获取 su' : '未获取，请授予本应用 Root'],
+    ['Xposed 模块', e.moduleActive || e.systemHook ? 'ok' : 'bad', e.moduleActive || e.systemHook ? '检测到模块响应' : '未激活，请在框架中启用并重启'],
+    ['系统模块响应', e.systemHook ? 'ok' : 'bad', e.systemHook ? '探针已响应，继续检查配置与定位下发' : '未响应，请勾选系统框架（system / android）并重启'],
   ];
-  // what system_server itself reports back through the probe (only meaningful once the hook answered)
-  if (e.systemHook) {
-    const sysOk = !!e.sysPrefs && (!e.started || !!e.sysStarted);
-    const viaRoot = e.sysChannel === 'root';
-    let d;
-    if (!e.sysPrefs) d = '系统服务读不到配置：框架「共享偏好」异常，且 root 回退写入失败 · 请确认已授予本应用 Root，或更新 LSPosed/Vector 后重启';
-    else if (e.started && !e.sysStarted) d = '本应用已开始模拟，但系统服务读到的仍是「未开始」· 试试停止再开始，或重启手机';
-    else if (viaRoot) d = (e.started ? '系统服务已读到「模拟中」' : '系统服务能读到配置') + '（经 root 回退通道，框架共享偏好不可用但已绕过）';
-    else d = e.started ? '系统服务已读到「模拟中」' : '系统服务能读到配置（当前未开始模拟）';
-    items.push(['系统侧读取配置', sysOk, d]);
+  const diag = configDiagnosis(e);
+  rows.push(['系统配置同步', ...diag]);
+  rows.push(['Root 配置快照', e.mirrorError ? 'warn' : 'ok', e.mirrorError || '已写入版本 ' + e.mirrorRevision]);
+  if (e.sysProtocol === e.protocol && e.sysVersion === e.version) {
+    rows.push(['定位回调 Hook', e.liveHook ? 'ok' : 'bad', e.liveHook ? '已安装实时下发 Hook；不代表目标应用已采用坐标' : '未找到实时下发方法，请导出诊断']);
+    rows.push(['最近定位下发', e.deliveries > 0 ? 'ok' : 'warn', e.deliveries > 0 ? '本次系统启动已改写 ' + e.deliveries + ' 次；最近 ' + new Date(e.lastDelivery).toLocaleTimeString() : '尚未观察到下发，请开始模拟并在目标应用请求定位']);
   }
-  items.push(['模拟位置权限', e.mockAllowed, e.mockAllowed ? '已授予' : '未授予（点下方一键配置）']);
-  items.push(['悬浮窗权限', e.overlay, e.overlay ? '已授予（摇杆可用）' : '未授予，摇杆不可用']);
-  items.forEach(([n, ok, d]) => box.appendChild(envItem(n, ok ? 'ok' : (n.includes('悬浮') ? 'warn' : 'bad'), d)));
-  const dev = el('div', 'card muted small'); dev.textContent = e.device + ' · SDK ' + e.sdk + (e.scope ? '\n作用域: ' + e.scope.replace(/\s+/g, ' ') : '')
-    + (e.sysHooks ? '\n系统 Hook: ' + e.sysHooks : '');
+  const svc = e.service || {};
+  if (e.started) rows.push(['定位服务', svc.running ? 'ok' : 'bad', svc.running ? `GPS ${svc.gpsReady ? '就绪' : '未就绪'} / 网络 ${svc.networkReady ? '就绪' : '未就绪'}` : '服务未运行，请重新开始模拟']);
+  rows.push(['模拟位置权限', e.mockAllowed ? 'ok' : 'bad', e.mockAllowed ? '已授予' : '未授予（点下方一键配置）']);
+  rows.push(['悬浮窗权限', e.overlay ? 'ok' : 'warn', e.overlay ? '已授予（摇杆可用）' : '未授予，摇杆不可用']);
+  rows.forEach(([name, state, desc]) => box.appendChild(envItem(name, state, desc)));
+  const dev = el('div', 'card muted small');
+  dev.textContent = `${e.device} · SDK ${e.sdk}\nApp ${e.version || '?'} / Hook ${e.sysVersion || 'unknown'}\n配置 ${e.configRevision || 0} / 系统 ${e.sysRevision || 0}`
+    + (e.scope ? '\n作用域: ' + e.scope.replace(/\s+/g, ' ') : '') + (e.sysHooks ? '\n系统 Hook: ' + e.sysHooks : '');
   dev.style.whiteSpace = 'pre-wrap'; box.appendChild(dev);
-  if (e.mockError) { const m = el('div', 'card small'); m.style.color = 'var(--bad)'; m.textContent = '测试定位源错误：' + e.mockError; box.appendChild(m); }
-  // drawer status summary
+  for (const text of [e.mockError, svc.providerNote]) if (text) { const m = el('div', 'card small'); m.textContent = text; box.appendChild(m); }
   updateDrawerStatus(e);
 }
 function envItem(name, st, desc) {
@@ -822,11 +829,11 @@ function envItem(name, st, desc) {
   return it;
 }
 async function updateDrawerStatus(e) {
-  if (!e) { try { e = JSON.parse(await N.checkEnv()); } catch (err) { return; } }
-  const ds = $('#drawerStatus');
-  if (e.systemHook) { ds.className = 'drawer-status ok'; ds.textContent = '✓ 全局模拟已就绪，系统框架已注入'; }
-  else if (e.moduleActive) { ds.className = 'drawer-status bad'; ds.textContent = '⚠ 模块已启用但系统框架未生效，请到「环境检查」勾选作用域并重启手机'; }
-  else { ds.className = 'drawer-status bad'; ds.textContent = '⚠ 模块未激活，请在 LSPosed/Vector 里启用后重启'; }
+  if (!e) { try { e = JSON.parse(await N.checkEnv()); } catch (_) { return; } }
+  const ds = $('#drawerStatus'); if (!ds) return;
+  const [state, desc] = configDiagnosis(e);
+  ds.className = 'drawer-status ' + state;
+  ds.textContent = desc;
 }
 
 /* ==== modal & sheet menu ==== */
@@ -929,6 +936,7 @@ function bind() {
   $('#burstGo').onclick = stepBurst;
   $('#burstStop').onclick = () => { N.stopSteps(); toast('已停止刷步'); setTimeout(refreshStatus, 300); };
   // env page
+  $('#envCopy').onclick = async () => { const report = await N.diagnosticReport(); await N.copy(report); toast('诊断已复制，可发给开发者'); };
   $('#envRefresh').onclick = renderEnv;
   $('#envSetup').onclick = () => { toast('正在配置…'); call2(() => N.rootSetup()).then(r => { openModal('<h3>一键配置结果</h3><p>' + esc(r) + '</p><div class="actions"><button class="primary" id="mo">好</button></div>').querySelector('#mo').onclick = closeModal; renderEnv(); }); };
   $('#envReboot').onclick = () => confirmModal('重启手机', '现在重启手机以使框架作用域生效？', () => N.reboot(), '重启');

@@ -12,8 +12,8 @@ public class HookEntry implements IXposedHookLoadPackage {
     static final String TAG = "AnyDoor";
     private static SpoofState state;
 
-    static synchronized SpoofState state() {
-        if (state == null) state = new SpoofState();
+    static synchronized SpoofState state(String pkg) {
+        if (state == null) state = new SpoofState("android".equals(pkg) || "system".equals(pkg), pkg);
         return state;
     }
 
@@ -34,18 +34,18 @@ public class HookEntry implements IXposedHookLoadPackage {
             // system_server is delivered as "android" on stock LSPosed and as "system" on some
             // forks (e.g. JingMatrix Vector). Both mean the framework process.
             if ("android".equals(pkg) || "system".equals(pkg)) {
-                SystemHooks.install(lp, state());
+                SystemHooks.install(lp, state(pkg));
                 return;
             }
             if ("com.android.phone".equals(pkg)) {
-                PhoneHooks.install(lp, state());
+                PhoneHooks.install(lp, state(pkg));
                 return;
             }
             if ("com.android.bluetooth".equals(pkg)) {
-                BluetoothHooks.install(lp, state());
+                BluetoothHooks.install(lp, state(pkg));
                 return;
             }
-            AppHooks.install(lp, state());
+            AppHooks.install(lp, state(pkg));
         } catch (Throwable t) {
             log("install failed for " + pkg + ": " + t);
         }

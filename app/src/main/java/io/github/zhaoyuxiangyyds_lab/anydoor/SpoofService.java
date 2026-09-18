@@ -46,7 +46,11 @@ public class SpoofService extends Service {
     private Handler bg;
     private HandlerThread bgThread;
     private volatile boolean running;
-    private boolean providersAdded;
+    private ProviderController providers;
+    private volatile long generation;
+    private volatile boolean permissionsReady;
+    private long lastHeartbeat;
+    private volatile String providerNote = "";
     private volatile String mockError = "";
     private volatile long lastPush;
 
@@ -94,11 +98,32 @@ public class SpoofService extends Service {
         bgThread = new HandlerThread("anydoor-bg");
         bgThread.start();
         bg = new Handler(bgThread.getLooper());
+        providers = new ProviderController(new ProviderController.Backend() {
+            public void add(String p) throws Exception {
+                addOneProvider(p, "gps".equals(p));
+                Config.app(SpoofService.this).edit().putBoolean("owned_" + p, true).commit();
+            }
+            public void enable(String p) { lm.setTestProviderEnabled(p, true); }
+            public void remove(String p) {
+                try { lm.removeTestProvider(p); } catch (IllegalArgumentException absent) { /* already removed */ }
+                Config.app(SpoofService.this).edit().putBoolean("owned_" + p, false).commit();
+            }
+            public void push(String p) {
+                double[] pos = jittered();
+                pushLocation(p, pos[0], pos[1]);
+            }
+        });
+        for (String p : new String[]{"gps", "network"}) {
+            if (Config.app(this).getBoolean("owned_" + p, false)) providers.restoreOwnership(p);
+        }
         createChannel();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent == null && !Config.config(this).getBoolean(Keys.STARTED, false)) {
+            stopSpoof(); return START_NOT_STICKY;
+        }
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
             stopSpoof();
@@ -107,7 +132,7 @@ public class SpoofService extends Service {
         } else {
             startSpoof();
         }
-        return START_STICKY;
+        return running ? START_STICKY : START_NOT_STICKY;
     }
 
     @Override
@@ -118,8 +143,12 @@ public class SpoofService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        permissionsReady = false;
+        ui.removeCallbacks(ticker);
+        Config.commit(Config.config(this).edit().putBoolean(Keys.STARTED, false));
         removeProviders();
         setJoystickVisible(false);
+        bg.removeCallbacksAndMessages(null);
         bgThread.quitSafely();
         instance = null;
         super.onDestroy();
@@ -134,16 +163,24 @@ public class SpoofService extends Service {
         baseLng = Config.num(c, Keys.LNG, 116.397499);
         stepsTotal = Config.num(c, Keys.STEPS, 0);
         reloadParams(c);
-        c.edit().putBoolean(Keys.STARTED, true).commit();
+        Config.commit(c.edit().putBoolean(Keys.STARTED, true));
         startForeground(NOTIF_ID, buildNotification());
         if (running) return;
         running = true;
+        permissionsReady = false;
+        generation = providers.start();
+        final long token = generation;
         lastTick = SystemClock.elapsedRealtime();
         bg.post(new Runnable() {
             @Override
             public void run() {
                 ensureMockPermission();
-                addProviders();
+                ui.post(() -> {
+                    if (!running || generation != token) return;
+                    permissionsReady = true;
+                    addProviders();
+                    pushNow();
+                });
             }
         });
         ui.removeCallbacks(ticker);
@@ -155,8 +192,8 @@ public class SpoofService extends Service {
         routeActive = false;
         burstLeft = 0;
         ui.removeCallbacks(ticker);
-        Config.config(this).edit().putBoolean(Keys.STARTED, false)
-                .putString(Keys.SPEED, "0").commit();
+        Config.commit(Config.config(this).edit().putBoolean(Keys.STARTED, false)
+                .putString(Keys.SPEED, "0"));
         setJoystickVisible(false);
         removeProviders();
         stopForeground(true);
@@ -197,6 +234,11 @@ public class SpoofService extends Service {
             lastTick = now;
             SharedPreferences c = Config.config(SpoofService.this);
             reloadParams(c);
+            if (permissionsReady) addProviders();
+            if (now - lastHeartbeat >= 3000) {
+                lastHeartbeat = now;
+                Config.commit(c.edit());
+            }
             boolean moving = false;
             if (joyX != 0 || joyY != 0) {
                 double mag = Math.min(1.0, Math.sqrt(joyX * joyX + joyY * joyY));
@@ -239,11 +281,10 @@ public class SpoofService extends Service {
         long now = SystemClock.elapsedRealtime();
         if (!force && now - lastConfigWrite < 200) return;
         lastConfigWrite = now;
-        Config.config(this).edit()
+        Config.commit(Config.config(this).edit()
                 .putString(Keys.LAT, fmt(baseLat)).putString(Keys.LNG, fmt(baseLng))
                 .putString(Keys.SPEED, fmt(speed)).putString(Keys.BEARING, fmt(bearing))
-                .putString(Keys.STEPS, fmt(Math.floor(stepsTotal)))
-                .commit();
+                .putString(Keys.STEPS, fmt(Math.floor(stepsTotal))));
     }
 
     /** Current (jittered) fix, identical to what the hooks compute for this time bucket. */
@@ -256,46 +297,38 @@ public class SpoofService extends Service {
     }
 
     private void pushNow() {
-        if (!running || !providersAdded) return;
-        double[] p = jittered();
-        SharedPreferences c = Config.config(this);
-        boolean net = c.getBoolean(Keys.MOCK_NETWORK, true);
-        push(LocationManager.GPS_PROVIDER, p[0], p[1]);
-        if (net) push(LocationManager.NETWORK_PROVIDER, p[0], p[1]);
-        lastPush = System.currentTimeMillis();
+        if (!running || !permissionsReady) return;
+        providers.push(System.currentTimeMillis());
+        lastPush = providers.lastPush();
+        publishProviderStatus();
     }
 
-    private void push(String provider, double lat, double lng) {
-        try {
-            Location l = new Location(provider);
-            l.setLatitude(lat);
-            l.setLongitude(lng);
-            l.setAltitude(alt);
-            l.setAccuracy((float) (LocationManager.NETWORK_PROVIDER.equals(provider) ? Math.max(acc, 20) : acc));
-            l.setSpeed((float) speed);
-            l.setBearing((float) bearing);
-            l.setTime(System.currentTimeMillis());
-            l.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());
-            if (Build.VERSION.SDK_INT >= 26) {
-                l.setVerticalAccuracyMeters(3f);
-                l.setSpeedAccuracyMetersPerSecond(0.5f);
-                l.setBearingAccuracyDegrees(speed > 0.3 ? 10f : 90f);
-            }
-            // real GNSS fixes carry satellites/maxCn0/meanCn0; SDKs treat a gps fix without them as mocked
-            if (LocationManager.GPS_PROVIDER.equals(provider)) {
-                Bundle extras = new Bundle();
-                extras.putInt("satellites", 9 + (int) ((System.currentTimeMillis() / 20000L) % 7));
-                extras.putFloat("maxCn0", 41f);
-                extras.putFloat("meanCn0", 29f);
-                l.setExtras(extras);
-            }
-            lm.setTestProviderLocation(provider, l);
-            mockError = "";
-        } catch (Throwable t) {
-            mockError = String.valueOf(t);
-            Log.w(TAG, "setTestProviderLocation " + provider + ": " + t);
+    private void pushLocation(String provider, double lat, double lng) {
+        Location l = new Location(provider);
+        l.setLatitude(lat);
+        l.setLongitude(lng);
+        l.setAltitude(alt);
+        l.setAccuracy((float) (LocationManager.NETWORK_PROVIDER.equals(provider) ? Math.max(acc, 20) : acc));
+        l.setSpeed((float) speed);
+        l.setBearing((float) bearing);
+        l.setTime(System.currentTimeMillis());
+        l.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());
+        if (Build.VERSION.SDK_INT >= 26) {
+            l.setVerticalAccuracyMeters(3f);
+            l.setSpeedAccuracyMetersPerSecond(0.5f);
+            l.setBearingAccuracyDegrees(speed > 0.3 ? 10f : 90f);
         }
+        // real GNSS fixes carry satellites/maxCn0/meanCn0; SDKs treat a gps fix without them as mocked
+        if (LocationManager.GPS_PROVIDER.equals(provider)) {
+            Bundle extras = new Bundle();
+            extras.putInt("satellites", 9 + (int) ((System.currentTimeMillis() / 20000L) % 7));
+            extras.putFloat("maxCn0", 41f);
+            extras.putFloat("meanCn0", 29f);
+            l.setExtras(extras);
+        }
+        lm.setTestProviderLocation(provider, l);
     }
+
 
     // ------------------------------------------------------------------ mock providers
 
@@ -310,34 +343,21 @@ public class SpoofService extends Service {
     }
 
     private void addProviders() {
-        if (!Config.config(this).getBoolean(Keys.MOCK_DRIVER, true)) {
-            providersAdded = false;
-            return;
+        if (!running || !permissionsReady) return;
+        SharedPreferences c = Config.config(this);
+        boolean exempt = !c.getString(Keys.EXEMPT, "").trim().isEmpty();
+        providerNote = exempt ? "已设置豁免应用：停用全局测试定位源，等待真实系统定位回调" : "";
+        providers.reconcile(generation, c.getBoolean(Keys.MOCK_DRIVER, true) && !exempt,
+                c.getBoolean(Keys.MOCK_NETWORK, true), SystemClock.elapsedRealtime());
+        publishProviderStatus();
+    }
+
+    private void publishProviderStatus() {
+        String next = providers.error();
+        if (!next.equals(mockError)) {
+            mockError = next;
+            Config.app(this).edit().putString(Keys.MOCK_ERROR, next).apply();
         }
-        boolean ok = true;
-        for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
-            try {
-                try {
-                    lm.removeTestProvider(p);
-                } catch (Throwable ignored) {
-                }
-                addOneProvider(p, LocationManager.GPS_PROVIDER.equals(p));
-                lm.setTestProviderEnabled(p, true);
-                mockError = "";
-            } catch (Throwable t) {
-                ok = false;
-                mockError = String.valueOf(t);
-                Log.w(TAG, "addTestProvider " + p + ": " + t);
-            }
-        }
-        providersAdded = ok;
-        Config.app(this).edit().putString(Keys.MOCK_ERROR, ok ? "" : mockError).apply();
-        if (ok) ui.post(new Runnable() {
-            @Override
-            public void run() {
-                pushNow();
-            }
-        });
     }
 
     /**
@@ -377,14 +397,11 @@ public class SpoofService extends Service {
     }
 
     private void removeProviders() {
-        if (!providersAdded) return;
-        providersAdded = false;
-        for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
-            try {
-                lm.removeTestProvider(p);
-            } catch (Throwable ignored) {
-            }
-        }
+        permissionsReady = false;
+        generation++;
+        providers.stop();
+        publishProviderStatus();
+        // Failed cleanup ownership remains persisted and is retried on the next service start.
     }
 
     // ------------------------------------------------------------------ route
@@ -612,7 +629,10 @@ public class SpoofService extends Service {
                 o.put("routeDone", done).put("routeTotal", routeTotal).put("routeSeg", routeSeg);
             }
             o.put("joystick", joystick != null && joystick.isShown());
-            o.put("providers", providersAdded);
+            o.put("providers", providers.hasProviders());
+            o.put("gpsReady", providers.enabled("gps"));
+            o.put("networkReady", providers.enabled("network"));
+            o.put("providerNote", providerNote);
             o.put("mockError", mockError);
             o.put("lastPush", lastPush);
         } catch (Exception ignored) {

@@ -28,7 +28,33 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        Config.ensureDefaults(this);
+        beginInitialization();
+    }
+
+    private void beginInitialization() {
+        android.widget.TextView loading = new android.widget.TextView(this);
+        loading.setText("正在加载设置；升级时会迁移收藏，请在提示时授予 Root…");
+        loading.setPadding(32, 80, 32, 32);
+        setContentView(loading);
+        new Thread(() -> {
+            try {
+                LegacyPrefsMigration.migrate(this);
+                Config.ensureDefaults(this);
+                if (!SpoofService.isRunning()) Config.commit(Config.config(this).edit().putBoolean(Keys.STARTED, false));
+                Config.mirror();
+                runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) initializeUi(); });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    new android.app.AlertDialog.Builder(this).setTitle("设置迁移未完成")
+                            .setMessage(e.getMessage()).setPositiveButton("重试", (d, w) -> beginInitialization())
+                            .setNegativeButton("退出", (d, w) -> finish()).setCancelable(false).show();
+                });
+            }
+        }, "anydoor-init").start();
+    }
+
+    private void initializeUi() {
         applyWindowStyle();
         web = new WebView(this);
         setContentView(web);
@@ -122,6 +148,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (web == null) { finishBack(); return; }
         web.evaluateJavascript("(window.handleBack && window.handleBack()) ? 1 : 0", new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String v) {

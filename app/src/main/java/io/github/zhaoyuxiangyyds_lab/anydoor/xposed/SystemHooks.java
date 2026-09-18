@@ -10,6 +10,8 @@ import android.os.Bundle;
 import android.os.Process;
 
 import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
+import io.github.zhaoyuxiangyyds_lab.anydoor.ConfigSnapshot;
+import io.github.zhaoyuxiangyyds_lab.anydoor.BuildInfo;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,6 +35,8 @@ final class SystemHooks {
 
     /** Hook counts, reported back to the app through the probe provider (see LastLocationHook). */
     private static volatile int lastHooks, deliverHooks, reportHooks, acceptHooks;
+    private static final java.util.concurrent.atomic.AtomicLong deliveries = new java.util.concurrent.atomic.AtomicLong();
+    private static volatile long lastDelivery;
     private static volatile String wifiState = "none";
 
     static void install(XC_LoadPackage.LoadPackageParam lp, final SpoofState st) {
@@ -63,13 +67,13 @@ final class SystemHooks {
                 deliverHooks = HookUtil.hookAll(recv, "callLocationChangedLocked", new DeliverHook(st));
                 HookEntry.log("Receiver.callLocationChangedLocked hooks: " + deliverHooks);
             }
-            // Android 12+: provider report path (replaces the result for every listener and the
-            // last-location cache) ...
+            // Android 12+: rewrite per registration, after the system cache is updated.
             Class<?> lpm = XposedHelpers.findClassIfExists("com.android.server.location.provider.LocationProviderManager", cl);
             if (lpm != null) {
-                reportHooks = HookUtil.hookAll(lpm, "onReportLocation", new ReportHook(st));
+                // Observe the upstream report path; never replace the global cache or erase mock flags there.
+                reportHooks = HookUtil.hookAll(lpm, "onReportLocation", new XC_MethodHook() {});
                 HookEntry.log("LocationProviderManager.onReportLocation hooks: " + reportHooks);
-                // ... plus the per-registration delivery point as a safety net: it also covers the
+                // The per-registration delivery point also covers the
                 // "deliver cached last location on register" fast path and OEM builds where the
                 // report path is bypassed, and it honours the exempt list per package.
                 acceptHooks = installAcceptHooks(lpm, st);
@@ -338,9 +342,24 @@ final class SystemHooks {
             String provider = requestedProvider(p.args);
             // liveness probe from our own app, works even when spoofing is off; the extras tell
             // the app what system_server actually sees (config readable? started? which hooks?)
+            if (Keys.STATE_PROVIDER.equals(provider)) {
+                // This channel contains only the module's simulated settings, never app-private keys/history.
+                if (!HookUtil.isSystemUid(Binder.getCallingUid()) && !callerHasLocationPermission(p.thisObject)) return;
+                Location state = new Location(Keys.STATE_PROVIDER);
+                Bundle b = new Bundle(); b.putInt("protocol", ConfigSnapshot.PROTOCOL);
+                b.putString("state", st.snapshotJson()); state.setExtras(b); p.setResult(state); return;
+            }
             if (Keys.PROBE_PROVIDER.equals(provider)) {
                 Location probe = st.build(Keys.PROBE_PROVIDER, null);
                 Bundle b = new Bundle();
+                b.putInt("protocol", ConfigSnapshot.PROTOCOL);
+                b.putString("version", BuildInfo.VERSION);
+                b.putLong("revision", st.revision());
+                b.putString("error", st.error());
+                b.putBoolean("lease", st.leaseValid());
+                b.putBoolean("liveHook", deliverHooks > 0 || acceptHooks > 0);
+                b.putLong("deliveries", deliveries.get());
+                b.putLong("lastDelivery", lastDelivery);
                 b.putBoolean("prefs", st.configReadable());
                 b.putString("channel", st.channel());
                 b.putBoolean("started", st.started());
@@ -350,7 +369,7 @@ final class SystemHooks {
                 p.setResult(probe);
                 return;
             }
-            if (!st.started()) return;
+            if (!st.started() || p.hasThrowable()) return;
             int uid = Binder.getCallingUid();
             String pkg = HookUtil.callerPackage(p.thisObject, p.args, uid);
             if (st.isExempt(pkg)) return;
@@ -381,7 +400,7 @@ final class SystemHooks {
         private static boolean callerHasLocationPermission(Object service) {
             if (Binder.getCallingPid() == Process.myPid()) return true;
             Context ctx = HookUtil.context(service);
-            if (ctx == null) return true;
+            if (ctx == null) return false;
             return ctx.checkCallingPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                     || ctx.checkCallingPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         }
@@ -402,6 +421,7 @@ final class SystemHooks {
             if (st.isExempt(pkg)) return;
             Location o = p.args[0] instanceof Location ? (Location) p.args[0] : null;
             p.args[0] = st.build(o != null ? o.getProvider() : "gps", o);
+            deliveries.incrementAndGet(); lastDelivery = System.currentTimeMillis();
             if (st.debug()) HookEntry.log("deliver → spoof for " + pkg);
         }
 
@@ -457,47 +477,9 @@ final class SystemHooks {
         }
     }
 
-    /** Android 12+: LocationProviderManager.onReportLocation(LocationResult) → replace the whole result. */
-    static final class ReportHook extends XC_MethodHook {
-        /** depth of spoofed onReportLocation frames on this thread; deliveries inside are already spoofed */
-        private static final ThreadLocal<int[]> DEPTH = new ThreadLocal<>();
-        private final SpoofState st;
-
-        ReportHook(SpoofState st) {
-            this.st = st;
-        }
-
-        static boolean inside() {
-            int[] d = DEPTH.get();
-            return d != null && d[0] > 0;
-        }
-
-        private static void enter(int delta) {
-            int[] d = DEPTH.get();
-            if (d == null) DEPTH.set(d = new int[1]);
-            d[0] = Math.max(0, d[0] + delta);
-        }
-
-        @Override
-        protected void beforeHookedMethod(MethodHookParam p) {
-            if (!st.started() || p.args.length == 0 || p.args[0] == null) return;
-            Object replaced = spoofResult(st, p.args[0], p.thisObject);
-            if (replaced == null) return;
-            p.args[0] = replaced;
-            p.setObjectExtra("anydoor", Boolean.TRUE);
-            enter(+1);
-        }
-
-        @Override
-        protected void afterHookedMethod(MethodHookParam p) {
-            if (p.getObjectExtra("anydoor") != null) enter(-1);
-        }
-    }
-
     /**
      * Android 12+: LocationProviderManager$…Registration.acceptLocationChange(LocationResult).
-     * Runs for deliveries that did not pass through a hooked onReportLocation (cached last location
-     * on register, OEM report paths) and skips exempt packages.
+     * Rewrites only this recipient, including cached delivery; leaves global cache and exemptions intact.
      */
     static final class AcceptHook extends XC_MethodHook {
         private final SpoofState st;
@@ -508,7 +490,7 @@ final class SystemHooks {
 
         @Override
         protected void beforeHookedMethod(MethodHookParam p) {
-            if (ReportHook.inside() || !st.started() || p.args.length == 0 || p.args[0] == null) return;
+            if (!st.started() || p.args.length == 0 || p.args[0] == null) return;
             String pkg = registrationPackage(p.thisObject);
             if (st.isExempt(pkg)) return;
             Object manager = null;
@@ -519,6 +501,7 @@ final class SystemHooks {
             Object replaced = spoofResult(st, p.args[0], manager);
             if (replaced == null) return;
             p.args[0] = replaced;
+            deliveries.incrementAndGet(); lastDelivery = System.currentTimeMillis();
             if (st.debug()) HookEntry.log("accept → spoof for " + pkg);
         }
 

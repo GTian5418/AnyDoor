@@ -36,7 +36,7 @@ final class AppHooks {
 
     static void install(final XC_LoadPackage.LoadPackageParam lp, final SpoofState st) {
         final String pkg = lp.packageName;
-        if (st.isExempt(pkg)) return;
+        if (Keys.PKG.equals(pkg)) return;
 
         // ---- android.location.Location getters ----
         Class<?> loc = Location.class;
@@ -66,7 +66,9 @@ final class AppHooks {
         HookUtil.hookAll(lm, "getLastKnownLocation", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
-                if (!st.started()) return;
+                if (p.args.length > 0 && (Keys.PROBE_PROVIDER.equals(p.args[0]) || Keys.STATE_PROVIDER.equals(p.args[0]))) return;
+                if (!st.started() || st.isExempt(pkg) || !st.bool(Keys.APP_HOOK, true)) return;
+                if (p.hasThrowable()) return;
                 String provider = p.args.length > 0 && p.args[0] instanceof String ? (String) p.args[0] : "gps";
                 Object res = p.getResult();
                 p.setResult(st.build(provider, res instanceof Location ? (Location) res : null));
@@ -75,7 +77,7 @@ final class AppHooks {
         XC_MethodHook pump = new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
-                if (!st.started()) return;
+                if (!st.started() || st.isExempt(pkg) || !st.bool(Keys.APP_HOOK, true)) return;
                 LocationListener listener = null;
                 Looper looper = null;
                 String provider = null;
@@ -85,11 +87,11 @@ final class AppHooks {
                     else if (a instanceof String && provider == null) provider = (String) a;
                 }
                 if (listener == null) return;
-                startPump(st, listener, looper, provider == null ? "gps" : provider);
+                if (!p.hasThrowable()) startPump(st, listener, looper, provider == null ? "gps" : provider, pkg, "requestSingleUpdate".equals(p.method.getName()));
             }
         };
         HookUtil.hookAll(lm, "requestLocationUpdates", pump);
-        HookUtil.hookAll(lm, "requestSingleUpdate", pump);
+        // Single-update requests use the platform delivery; a second timer would deliver twice.
         HookUtil.hookAll(lm, "removeUpdates", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
@@ -99,7 +101,7 @@ final class AppHooks {
         HookUtil.hookAll(lm, "isProviderEnabled", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
-                if (!st.started()) return;
+                if (!st.started() || st.isExempt(pkg) || !st.bool(Keys.APP_HOOK, true)) return;
                 if (p.args.length > 0 && ("gps".equals(p.args[0]) || "network".equals(p.args[0]))) p.setResult(true);
             }
         });
@@ -352,7 +354,7 @@ final class AppHooks {
         HookUtil.hookAll(cls, name, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam p) {
-                if (!st.started() || !isSystemFix(p.thisObject)) return;
+                if (!st.started() || st.isExempt(pkg) || !st.bool(Keys.APP_HOOK, true) || !isSystemFix(p.thisObject)) return;
                 SpoofState.Fix f = st.current();
                 switch (what) {
                     case 0: p.setResult(f.lat); break;
@@ -367,7 +369,7 @@ final class AppHooks {
     }
 
     /** Periodically feed a listener with fresh fixes so apps get updates even without a real GPS fix. */
-    private static synchronized void startPump(final SpoofState st, final LocationListener l, Looper looper, final String provider) {
+    private static synchronized void startPump(final SpoofState st, final LocationListener l, Looper looper, final String provider, final String pkg, final boolean single) {
         stopPump(l);
         final Handler h = new Handler(looper != null ? looper : Looper.getMainLooper());
         Runnable r = new Runnable() {
@@ -376,9 +378,10 @@ final class AppHooks {
                 synchronized (AppHooks.class) {
                     if (PUMPS.get(l) != this) return;
                 }
-                if (st.started()) {
+                if (st.started() && !st.isExempt(pkg) && st.bool(Keys.APP_HOOK, true)) {
                     try {
                         l.onLocationChanged(st.build(provider, null));
+                        if (single) { stopPump(l); return; }
                     } catch (Throwable t) {
                         HookEntry.log("pump: " + t);
                     }

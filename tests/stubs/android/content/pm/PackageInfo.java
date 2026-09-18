@@ -1,0 +1,1 @@
+package android.content.pm; public class PackageInfo { public long firstInstallTime=1,lastUpdateTime=2; }

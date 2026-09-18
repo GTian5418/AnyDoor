@@ -1,0 +1,1 @@
+package android.util; public class Xml { public static org.xmlpull.v1.XmlPullParser newPullParser(){return new org.kxml2.io.KXmlParser();} }
