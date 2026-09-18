@@ -341,7 +341,8 @@ final class SystemHooks {
             if (Keys.PROBE_PROVIDER.equals(provider)) {
                 Location probe = st.build(Keys.PROBE_PROVIDER, null);
                 Bundle b = new Bundle();
-                b.putBoolean("prefs", st.prefsReadable());
+                b.putBoolean("prefs", st.configReadable());
+                b.putString("channel", st.channel());
                 b.putBoolean("started", st.started());
                 b.putInt("sdk", Build.VERSION.SDK_INT);
                 b.putString("hooks", hookSummary());

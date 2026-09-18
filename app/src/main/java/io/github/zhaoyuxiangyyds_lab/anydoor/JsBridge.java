@@ -94,6 +94,7 @@ public class JsBridge {
             o.put("systemHook", probe != null);
             if (probe != null) {
                 o.put("sysPrefs", probe.getBoolean("prefs", false));
+                o.put("sysChannel", probe.getString("channel", ""));
                 o.put("sysStarted", probe.getBoolean("started", false));
                 o.put("sysSdk", probe.getInt("sdk", 0));
                 o.put("sysHooks", probe.getString("hooks", ""));
@@ -361,6 +362,47 @@ public class JsBridge {
         });
     }
 
+    private static Location lastKnown(LocationManager lm) {
+        Location best = null;
+        for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER}) {
+            try {
+                Location l = lm.getLastKnownLocation(p);
+                if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+            } catch (Throwable ignored) {
+            }
+        }
+        return best;
+    }
+
+    /** Block up to ~8s for a single fresh fix from GPS or network. */
+    private static Location requestOneFix(final LocationManager lm) {
+        final Location[] box = new Location[1];
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        final android.os.HandlerThread ht = new android.os.HandlerThread("anydoor-locate");
+        ht.start();
+        final android.location.LocationListener listener = new android.location.LocationListener() {
+            @Override public void onLocationChanged(Location l) { box[0] = l; latch.countDown(); }
+            @Override public void onProviderDisabled(String p) {}
+            @Override public void onProviderEnabled(String p) {}
+            @Override public void onStatusChanged(String p, int st, android.os.Bundle e) {}
+        };
+        try {
+            android.os.Looper looper = ht.getLooper();
+            for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+                try {
+                    if (lm.isProviderEnabled(p)) lm.requestSingleUpdate(p, listener, looper);
+                } catch (Throwable ignored) {
+                }
+            }
+            latch.await(8, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable ignored) {
+        } finally {
+            try { lm.removeUpdates(listener); } catch (Throwable ignored) {}
+            ht.quitSafely();
+        }
+        return box[0];
+    }
+
     /** Real device location (only meaningful while spoofing is off; our package is exempt from hooks). */
     @JavascriptInterface
     public void locate(final int id) {
@@ -369,16 +411,14 @@ public class JsBridge {
             public void run() {
                 try {
                     LocationManager lm = (LocationManager) act.getSystemService(Context.LOCATION_SERVICE);
-                    Location best = null;
-                    for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER}) {
-                        try {
-                            Location l = lm.getLastKnownLocation(p);
-                            if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
-                        } catch (Throwable ignored) {
-                        }
+                    Location best = lastKnown(lm);
+                    // Nothing cached (common indoors, or right after boot): actively ask for one fix.
+                    if (best == null || System.currentTimeMillis() - best.getTime() > 60000) {
+                        Location fresh = requestOneFix(lm);
+                        if (fresh != null && (best == null || fresh.getTime() > best.getTime())) best = fresh;
                     }
                     if (best == null) {
-                        cb(id, err("暂无定位，请到室外或打开 WiFi 后再试"));
+                        cb(id, err("暂无定位：请到窗边/室外，并确认已开定位与 WiFi 后重试"));
                         return;
                     }
                     cb(id, new JSONObject().put("ok", true).put("lat", best.getLatitude()).put("lng", best.getLongitude())

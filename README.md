@@ -112,6 +112,9 @@
 到「环境检查」确认「系统框架 Hook」为 ✓。若为 ✕，说明作用域没选「系统框架」或没重启，按上面第 2、3 步重来。
 1.3.1 起环境检查多了一项「系统侧读取配置」——它是 `system_server` 自己汇报回来的：能不能读到配置文件、有没有读到「模拟中」，底部还列出各个 hook 的命中数（`last / report / accept / wifi`）。反馈问题时请把这一屏截图发出来。
 
+**Q：环境检查里「系统侧读取配置」显示 ✕，或全部 ✓ 却毫无效果 / 高德刚打开一闪就跳回真实位置？**
+根因是**系统服务（`system_server`）读不到本应用的配置**——部分框架（旧版 LSPosed、Vector）不支持 `xposedsharedprefs` 世界可读，Hook 注入了却永远读不到「已开始」，于是什么都没改，真实定位照常下发。1.3.2 起：只要有 Root，本应用会把配置额外写一份到 `/data/system/anydoor_prefs.json`（`system_server` 一定读得到），Hook 自动走这条 root 回退通道。**请确保「Root 权限」为 ✓ 并重启一次**；此后「系统侧读取配置」会显示「经 root 回退通道」。
+
 **Q：高德地图 / 微信 / 用高德 SDK 的 App 一直拿不到模拟位置，或报 `errorCode=8`、`LatLng is error#0802`？**
 请升级到 1.3.1 并重启一次手机。旧版有两个问题：① 伪造的 GPS 定位没带 `satellites` 卫星数，高德/百度/腾讯 SDK 会把这种「gps 定位」直接判定为模拟并丢弃；② 强化模式下 hook 了 `Location.hasAltitude()`，在 Android 12+ 上会打乱 `Location` 的 Parcel 布局，高德 `AMapLocation` 反序列化后经纬度变成乱码（就是 #0802）。另外 Android 11+ 的 WiFi 服务在单独的 APEX 类加载器里，旧版根本没 hook 到，WiFi 定位会泄露真实位置——1.3.1 已修。
 

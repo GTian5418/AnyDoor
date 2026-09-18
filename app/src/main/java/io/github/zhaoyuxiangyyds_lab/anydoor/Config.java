@@ -2,7 +2,11 @@ package io.github.zhaoyuxiangyyds_lab.anydoor;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Base64;
 import android.util.Log;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.json.JSONObject;
 
@@ -15,19 +19,78 @@ public final class Config {
     private static final String TAG = "AnyDoor";
     private static boolean worldReadable = true;
 
+    /**
+     * World-readable mirror of the config that system_server can always read. Some frameworks
+     * (old LSPosed / Vector) do not honour {@code xposedsharedprefs}, so the hook's
+     * XSharedPreferences cannot open the real prefs file and nothing ever activates. As the app
+     * has root, we additionally copy the config as JSON to /data/system (system_data_file, which
+     * system_server is always allowed to read) after every change; SpoofState falls back to it.
+     */
+    public static final String MIRROR_PATH = "/data/system/anydoor_prefs.json";
+
+    private static final ExecutorService IO = Executors.newSingleThreadExecutor();
+    private static SharedPreferences.OnSharedPreferenceChangeListener mirrorListener;
+    private static SharedPreferences cfgPrefs;
+    private static volatile boolean mirrorPending;
+
     private Config() {}
 
     @SuppressWarnings("deprecation")
     public static SharedPreferences config(Context c) {
+        SharedPreferences p;
         try {
-            SharedPreferences p = c.getSharedPreferences(Keys.CONFIG, Context.MODE_WORLD_READABLE);
+            p = c.getSharedPreferences(Keys.CONFIG, Context.MODE_WORLD_READABLE);
             worldReadable = true;
-            return p;
         } catch (SecurityException e) {
             worldReadable = false;
             Log.w(TAG, "MODE_WORLD_READABLE refused – framework inactive?");
-            return c.getSharedPreferences(Keys.CONFIG, Context.MODE_PRIVATE);
+            p = c.getSharedPreferences(Keys.CONFIG, Context.MODE_PRIVATE);
         }
+        installMirror(p);
+        return p;
+    }
+
+    /**
+     * Register a one-shot listener that re-writes the root mirror on every config change. The
+     * SharedPreferences instance is process-global per file, so this single listener catches
+     * writes from the Activity and the Service alike.
+     */
+    private static synchronized void installMirror(SharedPreferences p) {
+        if (mirrorListener != null || p == null) return;
+        cfgPrefs = p;
+        mirrorListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
+            @Override
+            public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
+                mirror();
+            }
+        };
+        try {
+            p.registerOnSharedPreferenceChangeListener(mirrorListener);
+        } catch (Throwable t) {
+            mirrorListener = null;
+        }
+    }
+
+    /** Re-write the world-readable JSON mirror via root; coalesces bursts of edits into one write. */
+    public static void mirror() {
+        if (mirrorPending) return;
+        mirrorPending = true;
+        IO.execute(new Runnable() {
+            @Override
+            public void run() {
+                mirrorPending = false;
+                try {
+                    if (cfgPrefs == null) return;
+                    Thread.sleep(120);   // let a burst of edits settle into a single write
+                    String json = toJson(cfgPrefs).toString();
+                    String b64 = Base64.encodeToString(json.getBytes("UTF-8"), Base64.NO_WRAP);
+                    RootShell.run("echo " + b64 + " | base64 -d > " + MIRROR_PATH
+                            + " && chmod 644 " + MIRROR_PATH
+                            + "; chcon u:object_r:system_data_file:s0 " + MIRROR_PATH + " 2>/dev/null; true");
+                } catch (Throwable ignored) {
+                }
+            }
+        });
     }
 
     public static boolean isWorldReadable() {

@@ -18,7 +18,7 @@ if (!window.Native) {
   window.__mockNative = window.Native = {
     getState: () => JSON.stringify({ config: store.config, app: store.app, started: running, version: '1.0.0-preview',
       service: running ? { running: true, lat: +store.config.lat, lng: +store.config.lng, curLat, curLng, speed: route ? route.speed : 0, bearing: 0, routeActive: !!route, paused: false, steps: Math.floor(steps), burstLeft: burst, routeDone: route ? Math.min(route.total, (Date.now() - routeStart) / 1000 * route.speed) : 0, routeTotal: route ? route.total : 0, joystick: false, providers: true, mockError: '' } : { running: false } }),
-    checkEnv: () => JSON.stringify({ moduleActive: true, systemHook: true, prefsWorldReadable: true, sysPrefs: true, sysStarted: false, started: false, sysHooks: 'last=1 deliver=0 report=1 accept=2 wifi=ok', root: true, mockAllowed: true, overlay: false, vectorCli: true, moduleEnabled: true, scope: 'android/0 com.android.phone/0', sdk: 28, device: 'Preview Device / Android 9', mockError: '' }),
+    checkEnv: () => JSON.stringify({ moduleActive: true, systemHook: true, prefsWorldReadable: true, sysPrefs: true, sysChannel: 'prefs', sysStarted: false, started: false, sysHooks: 'last=1 deliver=0 report=1 accept=2 wifi=ok', root: true, mockAllowed: true, overlay: false, vectorCli: true, moduleEnabled: true, scope: 'android/0 com.android.phone/0', sdk: 28, device: 'Preview Device / Android 9', mockError: '' }),
     rootSetup: () => '✓ 已授予模拟位置权限\n✓ 已授予悬浮窗权限\nVector: ok\n✓ 已启用模块并设置作用域',
     reboot: () => alert('reboot (preview)'),
     setTarget: (lat, lng) => { store.config.lat = String(lat); store.config.lng = String(lng); curLat = lat; curLng = lng; },

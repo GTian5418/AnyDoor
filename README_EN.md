@@ -89,6 +89,9 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 **Spoofing is "on" but apps still show my real location?**
 Open Environment Check and look at "System framework hook". If it's ✕, the System Framework scope isn't ticked or you haven't rebooted since enabling it.
 
+**"System-side config read" shows ✕, or everything is ✓ but nothing happens / Amap snaps back to the real position after a split second?**
+The root cause is that `system_server` cannot read the module's config: some frameworks (old LSPosed, Vector) do not support world-readable `xposedsharedprefs`, so the hook is injected but never sees "started" and leaves the real location untouched. Since 1.3.2, as long as Root is granted, the app also writes the config to `/data/system/anydoor_prefs.json` (always readable by `system_server`) and the hook falls back to it. **Make sure "Root" is ✓ and reboot once**; the check will then read "via root fallback channel".
+
 **Amap / WeChat / apps built on the Amap SDK never pick up the fake position, or report `errorCode=8` / `LatLng is error#0802`?**
 Update to 1.3.1 and reboot once. Older builds had two bugs: the fake GPS fix carried no `satellites` extra, so the Amap/Baidu/Tencent SDKs classified it as mocked and dropped it; and the in-scope ("strong mode") hook on `Location.hasAltitude()` corrupted the `Location` parcel layout on Android 12+, which turned Amap's `AMapLocation` lat/lng into garbage. On Android 11+ the Wi-Fi service also lives in its own APEX class loader and was never hooked, so Wi-Fi positioning leaked the real position — fixed as well. The environment check now shows what `system_server` itself sees (config readable, spoof started, hook hit counts).
 

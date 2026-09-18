@@ -797,9 +797,11 @@ async function renderEnv() {
   // what system_server itself reports back through the probe (only meaningful once the hook answered)
   if (e.systemHook) {
     const sysOk = !!e.sysPrefs && (!e.started || !!e.sysStarted);
+    const viaRoot = e.sysChannel === 'root';
     let d;
-    if (!e.sysPrefs) d = '系统服务读不到本应用的配置文件 · 框架的「共享偏好」支持异常，请更新 LSPosed/Vector 后重启';
+    if (!e.sysPrefs) d = '系统服务读不到配置：框架「共享偏好」异常，且 root 回退写入失败 · 请确认已授予本应用 Root，或更新 LSPosed/Vector 后重启';
     else if (e.started && !e.sysStarted) d = '本应用已开始模拟，但系统服务读到的仍是「未开始」· 试试停止再开始，或重启手机';
+    else if (viaRoot) d = (e.started ? '系统服务已读到「模拟中」' : '系统服务能读到配置') + '（经 root 回退通道，框架共享偏好不可用但已绕过）';
     else d = e.started ? '系统服务已读到「模拟中」' : '系统服务能读到配置（当前未开始模拟）';
     items.push(['系统侧读取配置', sysOk, d]);
   }
@@ -928,7 +930,7 @@ function bind() {
   $('#burstStop').onclick = () => { N.stopSteps(); toast('已停止刷步'); setTimeout(refreshStatus, 300); };
   // env page
   $('#envRefresh').onclick = renderEnv;
-  $('#envSetup').onclick = () => { toast('正在配置…'); call2(N.rootSetup).then(r => { openModal('<h3>一键配置结果</h3><p>' + esc(r) + '</p><div class="actions"><button class="primary" id="mo">好</button></div>').querySelector('#mo').onclick = closeModal; renderEnv(); }); };
+  $('#envSetup').onclick = () => { toast('正在配置…'); call2(() => N.rootSetup()).then(r => { openModal('<h3>一键配置结果</h3><p>' + esc(r) + '</p><div class="actions"><button class="primary" id="mo">好</button></div>').querySelector('#mo').onclick = closeModal; renderEnv(); }); };
   $('#envReboot').onclick = () => confirmModal('重启手机', '现在重启手机以使框架作用域生效？', () => N.reboot(), '重启');
   $('#envLog').onclick = () => { const box = $('#envLogBox'); box.classList.toggle('hidden'); if (!box.classList.contains('hidden')) box.textContent = N.frameworkLog ? N.frameworkLog() : '不可用'; };
   window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { getApp('theme', 'auto').then(t => { if (t === 'auto') applyTheme('auto'); }); });

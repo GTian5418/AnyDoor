@@ -4,11 +4,19 @@ import android.location.Location;
 import android.os.Bundle;
 import android.os.SystemClock;
 
+import io.github.zhaoyuxiangyyds_lab.anydoor.Config;
 import io.github.zhaoyuxiangyyds_lab.anydoor.GeoMath;
 import io.github.zhaoyuxiangyyds_lab.anydoor.Keys;
 
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileInputStream;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 import de.robv.android.xposed.XSharedPreferences;
@@ -22,6 +30,13 @@ final class SpoofState {
     private final XSharedPreferences prefs;
     private long lastReload;
     private boolean available;
+
+    // Root-written fallback mirror, used when the framework's shared-prefs support fails and
+    // system_server cannot read the real prefs file. Values are stored as strings.
+    private final File mirror = new File(Config.MIRROR_PATH);
+    private volatile Map<String, String> fb = new HashMap<>();
+    private volatile boolean fbLoaded;
+    private long fbMtime;
 
     SpoofState() {
         XSharedPreferences p = null;
@@ -45,28 +60,106 @@ final class SpoofState {
             if (!available) available = prefs.getFile() != null && prefs.getFile().canRead();
         } catch (Throwable ignored) {
         }
+        loadFallback();
+    }
+
+    /** Load the root mirror when the real prefs are not readable (or refresh it when it changed). */
+    private void loadFallback() {
+        try {
+            if (!mirror.canRead()) return;
+            long mt = mirror.lastModified();
+            if (fbLoaded && mt == fbMtime) return;
+            byte[] buf = new byte[(int) Math.max(0, mirror.length())];
+            FileInputStream in = new FileInputStream(mirror);
+            try {
+                int off = 0, n;
+                while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
+            } finally {
+                in.close();
+            }
+            JSONObject o = new JSONObject(new String(buf, "UTF-8"));
+            Map<String, String> m = new HashMap<>();
+            for (Iterator<String> it = o.keys(); it.hasNext(); ) {
+                String k = it.next();
+                m.put(k, String.valueOf(o.get(k)));
+            }
+            fb = m;                 // atomic swap; readers hold no lock
+            fbMtime = mt;
+            fbLoaded = true;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** True while the real prefs file is directly readable (no fallback needed). */
+    private boolean prefsOk() {
+        return available && prefs != null;
+    }
+
+    private boolean rawBool(String k, boolean def) {
+        if (prefsOk()) return prefs.getBoolean(k, def);
+        String v = fb.get(k);
+        return v == null ? def : Boolean.parseBoolean(v);
+    }
+
+    private String rawStr(String k, String def) {
+        if (prefsOk()) return prefs.getString(k, def);
+        String v = fb.get(k);
+        return v == null ? def : v;
+    }
+
+    private int rawInt(String k, int def) {
+        if (prefsOk()) return prefs.getInt(k, def);
+        String v = fb.get(k);
+        if (v == null) return def;
+        try {
+            return (int) Double.parseDouble(v);
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private long rawLong(String k, long def) {
+        if (prefsOk()) return prefs.getLong(k, def);
+        String v = fb.get(k);
+        if (v == null) return def;
+        try {
+            return Long.parseLong(v);
+        } catch (NumberFormatException e) {
+            try {
+                return (long) Double.parseDouble(v);
+            } catch (NumberFormatException e2) {
+                return def;
+            }
+        }
     }
 
     boolean started() {
         refresh();
-        return prefs != null && prefs.getBoolean(Keys.STARTED, false);
+        return rawBool(Keys.STARTED, false);
     }
 
-    /** Whether this process can actually read the module's config file. */
-    boolean prefsReadable() {
+    /** Config is readable through some channel (real prefs or the root mirror). */
+    boolean configReadable() {
         refresh();
-        return prefs != null && available;
+        return prefsOk() || fbLoaded;
+    }
+
+    /** Which channel the hook is reading config through, for the app's environment check. */
+    String channel() {
+        refresh();
+        if (prefsOk()) return "prefs";
+        if (fbLoaded) return "root";
+        return "none";
     }
 
     boolean bool(String k, boolean def) {
         refresh();
-        return prefs == null ? def : prefs.getBoolean(k, def);
+        return rawBool(k, def);
     }
 
     double num(String k, double def) {
         refresh();
-        if (prefs == null) return def;
-        String s = prefs.getString(k, null);
+        String s = rawStr(k, null);
         if (s == null) return def;
         try {
             return Double.parseDouble(s);
@@ -77,8 +170,7 @@ final class SpoofState {
 
     int interval() {
         refresh();
-        int v = prefs == null ? Keys.DEFAULT_INTERVAL : prefs.getInt(Keys.INTERVAL, Keys.DEFAULT_INTERVAL);
-        return Math.max(200, v);
+        return Math.max(200, rawInt(Keys.INTERVAL, Keys.DEFAULT_INTERVAL));
     }
 
     boolean debug() {
@@ -87,8 +179,7 @@ final class SpoofState {
 
     String str(String k, String def) {
         refresh();
-        if (prefs == null) return def;
-        String s = prefs.getString(k, def);
+        String s = rawStr(k, def);
         return s == null || s.isEmpty() ? def : s;
     }
 
@@ -120,8 +211,7 @@ final class SpoofState {
         if (pkg == null) return false;
         if (ALWAYS_EXEMPT.contains(pkg)) return true;
         refresh();
-        if (prefs == null) return false;
-        String ex = prefs.getString(Keys.EXEMPT, "");
+        String ex = rawStr(Keys.EXEMPT, "");
         if (ex == null || ex.isEmpty()) return false;
         for (String s : ex.split(",")) {
             if (pkg.equals(s.trim())) return true;
@@ -135,7 +225,7 @@ final class SpoofState {
         double lat = num(Keys.LAT, 39.9042), lng = num(Keys.LNG, 116.4074);
         double jitter = num(Keys.JITTER, 0);
         if (jitter > 0) {
-            long seed = prefs == null ? 0 : prefs.getLong(Keys.SEED, 0);
+            long seed = rawLong(Keys.SEED, 0);
             long bucket = System.currentTimeMillis() / interval();
             double[] j = GeoMath.jitter(lat, lng, jitter, seed, bucket);
             lat = j[0];
