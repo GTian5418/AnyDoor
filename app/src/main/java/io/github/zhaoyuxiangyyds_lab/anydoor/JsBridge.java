@@ -482,6 +482,45 @@ public class JsBridge {
         }
     }
 
+    /** Copy the bundled donation QR into the gallery (Pictures/AnyDoor) so it can be scanned from 微信→相册. */
+    @JavascriptInterface
+    public void saveDonateQr() {
+        pool.submit(new Runnable() {
+            @Override
+            public void run() {
+                String msg;
+                try {
+                    java.io.File cache = new java.io.File(act.getCacheDir(), "anydoor_donate.jpg");
+                    try (java.io.InputStream in = act.getAssets().open("web/donate.jpg");
+                         java.io.FileOutputStream out = new java.io.FileOutputStream(cache)) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                    }
+                    // The app already requires root; copying into the public Pictures dir and asking the
+                    // media scanner to index it avoids the scoped-storage / permission dance on every ROM.
+                    String dir = "/sdcard/Pictures/AnyDoor";
+                    String dest = dir + "/anydoor_donate.jpg";
+                    RootShell.Result r = RootShell.run("mkdir -p " + dir + " && cp '" + cache.getAbsolutePath()
+                            + "' '" + dest + "' && chmod 644 '" + dest + "'");
+                    if (r.ok()) {
+                        try {
+                            android.media.MediaScannerConnection.scanFile(act, new String[]{dest},
+                                    new String[]{"image/jpeg"}, null);
+                        } catch (Throwable ignored) {
+                        }
+                        msg = "二维码已保存到相册（Pictures/AnyDoor）";
+                    } else {
+                        msg = "保存失败，请直接截图保存二维码";
+                    }
+                } catch (Throwable t) {
+                    msg = "保存失败，请直接截图保存二维码";
+                }
+                toast(msg);
+            }
+        });
+    }
+
     @JavascriptInterface
     public void vibrate(int ms) {
         try {

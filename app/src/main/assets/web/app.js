@@ -947,6 +947,15 @@ async function updateDrawerStatus(e) {
 }
 
 /* ==== modal & sheet menu ==== */
+function showDonate() {
+  const m = openModal('<h3>赞赏支持 ☕</h3>'
+    + '<p class="muted small" style="margin:2px 0 10px">任意门免费开源。觉得好用的话，欢迎请作者喝杯奶茶，谢谢支持 🙏</p>'
+    + '<div style="text-align:center"><img src="donate.jpg" alt="微信收款码" style="width:80%;max-width:290px;border-radius:14px"></div>'
+    + '<p class="muted small" style="margin:10px 0 0;text-align:center;line-height:1.6">在本机赞赏：先「保存到相册」，再打开<b>微信 → 扫一扫 → 右上角相册</b>，选择这张二维码即可。</p>'
+    + '<div class="actions"><button id="dSave">保存到相册</button><button id="dClose" class="primary">好的</button></div>');
+  m.querySelector('#dSave').onclick = () => { if (window.Native && Native.saveDonateQr) Native.saveDonateQr(); else toast('请截图保存二维码'); };
+  m.querySelector('#dClose').onclick = closeModal;
+}
 function openModal(html) { const m = $('#modal'); m.innerHTML = html; $('#modalScrim').classList.remove('hidden'); return m; }
 function closeModal() { $('#modalScrim').classList.add('hidden'); }
 function modalInput(title, val, onOk) {
@@ -1012,6 +1021,8 @@ function bind() {
   $('#btnFav').onclick = toggleFav;
   $('#btnCopy').onclick = () => { if (!S.target) return; N.copy($('#coordText').textContent); toast('已复制'); };
   $('#coordBtn').onclick = () => { const arr = ['wgs84', 'gcj02', 'bd09']; S.crs = arr[(arr.indexOf(S.crs) + 1) % 3]; setApp('input_crs', S.crs); updateSheet(); };
+  $('#btnDonate').onclick = showDonate;
+  $('#drawerDonate').onclick = () => { openDrawer(false); showDonate(); };
   $('#fabLocate').onclick = locateReal;
   $('#fabLayers').onclick = (e) => { e.stopPropagation(); $('#layerPop').classList.toggle('hidden'); };
   document.addEventListener('click', (e) => { if (!$('#layerPop').contains(e.target) && e.target !== $('#fabLayers') && !$('#fabLayers').contains(e.target)) $('#layerPop').classList.add('hidden'); });
