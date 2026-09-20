@@ -168,6 +168,13 @@ final class SpoofState {
         return false;
     }
 
+    /** Whether the user configured any exempt app (the built-in always-exempt entries do not count). */
+    boolean hasExempt() {
+        refresh();
+        String ex = rawStr(Keys.EXEMPT, "");
+        return ex != null && !ex.trim().isEmpty();
+    }
+
     /** Current spoofed fix (after jitter). */
     Fix current() {
         refresh();

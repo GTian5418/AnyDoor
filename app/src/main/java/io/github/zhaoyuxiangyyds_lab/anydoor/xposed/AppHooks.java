@@ -173,7 +173,10 @@ final class AppHooks {
                 p.setResult(HookUtil.sanitizeServiceState(p.getResult()));
             }
         });
-        // connected WiFi inside NetworkCapabilities (Android 12+ replacement for getConnectionInfo)
+        // connected WiFi inside NetworkCapabilities (Android 12+ replacement for getConnectionInfo).
+        // Only the direct getter is rewritten in-process; the callback path (onCapabilitiesChanged)
+        // is masked system-side in ConnectivityService, which avoids touching a live callback Message
+        // in the app process (a source of hard-to-trace crashes in scoped apps).
         Class<?> cm = android.net.ConnectivityManager.class;
         HookUtil.hookAll(cm, "getNetworkCapabilities", new XC_MethodHook() {
             @Override
@@ -181,22 +184,6 @@ final class AppHooks {
                 if (!st.started() || !st.bool(Keys.WIFI_BLOCK, true) || p.hasThrowable()) return;
                 Object masked = HookUtil.maskWifiTransport(p.getResult(), st.privacy());
                 if (masked != null) p.setResult(masked);
-            }
-        });
-        Class<?> cbHandler = XposedHelpers.findClassIfExists("android.net.ConnectivityManager$CallbackHandler", null);
-        if (cbHandler != null) HookUtil.hookAll(cbHandler, "handleMessage", new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam p) {
-                if (!st.started() || !st.bool(Keys.WIFI_BLOCK, true)) return;
-                if (p.args.length == 0 || !(p.args[0] instanceof android.os.Message)) return;
-                android.os.Bundle data = ((android.os.Message) p.args[0]).peekData();
-                if (data == null) return;
-                try {
-                    Object nc = data.getParcelable("NetworkCapabilities");
-                    Object masked = HookUtil.maskWifiTransport(nc, st.privacy());
-                    if (masked != null) data.putParcelable("NetworkCapabilities", (android.os.Parcelable) masked);
-                } catch (Throwable ignored) {
-                }
             }
         });
         installIdentityHooks(st);

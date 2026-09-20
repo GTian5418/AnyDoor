@@ -11,9 +11,9 @@
 
 <p align="center"><b>简体中文</b> · <a href="README_EN.md">English</a></p>
 
-**1.4 补齐 WiFi / 基站屏蔽对新接口的覆盖，路线可选备选路线与途经点**：[下载 APK 与升级说明](../../releases/tag/v1.4) · [完整更新记录](CHANGELOG.md)。`requestCellInfoUpdate`（Android 10+）、`ServiceState` 里的小区标识、Android 12+ 经 `NetworkCapabilities` 下发的已连接 WiFi BSSID 之前都没有被屏蔽，应用自带的网络定位 SDK 仍能拿到真实环境——这是“系统定位已改、个别应用 / 小程序仍是原位置”的主要来源，本版补齐。路线规划现在列出高德的多条备选路线并支持途经点，并修复地图上路线折线几乎不可见的问题。**未在真机复测**；升级后请完整重启一次手机。
+**1.4.1 修复模拟位置几秒后跳回真实位置、作用域内应用闪退**：[下载 APK 与升级说明](../../releases/tag/v1.4.1) · [完整更新记录](CHANGELOG.md)。持续取位的应用（高德、微信、得力e+、分身类）此前会短暂显示虚拟位置后又跳回真实位置——已改在 `onReportLocation` 下发总入口统一改写并去掉模拟标记，不再依赖各 ROM 的内部类名。**目标应用无需加入作用域、也不要设为豁免**，只勾「系统框架」「电话」「蓝牙」即可。升级后请完整重启一次手机。 · [完整更新记录](CHANGELOG.md)。`requestCellInfoUpdate`（Android 10+）、`ServiceState` 里的小区标识、Android 12+ 经 `NetworkCapabilities` 下发的已连接 WiFi BSSID 之前都没有被屏蔽，应用自带的网络定位 SDK 仍能拿到真实环境——这是“系统定位已改、个别应用 / 小程序仍是原位置”的主要来源，本版补齐。路线规划现在列出高德的多条备选路线并支持途经点，并修复地图上路线折线几乎不可见的问题。**未在真机复测**；升级后请完整重启一次手机。
 
-<sub>更早：1.3.6 新增「系统直推」修复豁免应用模式下其他应用断供；1.3.5 修复 ColorOS/OxygenOS 等 ROM 上 `OP_MOCK_LOCATION` 被拒导致测试定位源注册失败；1.3.4 修复真实定位连续使用卡住与 Android 15/16 WiFi 屏蔽失效。见 [更新记录](CHANGELOG.md)。</sub>
+<sub>更早：1.4 补齐 WiFi/基站屏蔽对新接口的覆盖、路线备选与途经点；1.3.6 新增「系统直推」；1.3.5 修复 ColorOS/OxygenOS 等 ROM 上 `OP_MOCK_LOCATION` 被拒导致测试定位源注册失败；1.3.4 修复真实定位连续使用卡住与 Android 15/16 WiFi 屏蔽失效。见 [更新记录](CHANGELOG.md)。</sub>
 
 
 > 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。

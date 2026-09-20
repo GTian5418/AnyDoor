@@ -80,12 +80,32 @@ final class SystemHooks {
             // Android 12+: rewrite per registration, after the system cache is updated.
             Class<?> lpm = XposedHelpers.findClassIfExists("com.android.server.location.provider.LocationProviderManager", cl);
             if (lpm != null) {
-                // Observe the upstream report path; never replace the global cache or erase mock flags there.
-                reportHooks = HookUtil.hookAll(lpm, "onReportLocation", new XC_MethodHook() {});
+                // onReportLocation is the single, stable choke point every provider report passes
+                // through before it fans out to registrations and the last-location cache. When no
+                // app is exempt we replace the incoming LocationResult here: it is far more reliable
+                // than the per-registration classes (whose names differ across OEM builds), it also
+                // strips the mock-provider flag that the test provider stamps on its fixes (so a
+                // streaming client that drops flagged fixes no longer snaps back to the real
+                // position), and it covers the real provider overriding a spoofed fix a second
+                // later. With an exempt app configured we must keep the real report intact for them,
+                // so there we fall back to the per-registration rewrite that can skip exempt apps.
+                reportHooks = HookUtil.hookAll(lpm, "onReportLocation", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        if (Pump.injecting() || !st.started() || p.args.length == 0 || p.args[0] == null) return;
+                        if (st.hasExempt()) return;
+                        Object replaced = spoofResult(st, p.args[0], p.thisObject);
+                        if (replaced == null) return;
+                        p.args[0] = replaced;
+                        deliveries.incrementAndGet();
+                        lastDelivery = System.currentTimeMillis();
+                        if (st.debug()) HookEntry.log("report → spoof (" + managerName(p.thisObject) + ")");
+                    }
+                });
                 HookEntry.log("LocationProviderManager.onReportLocation hooks: " + reportHooks);
                 // The per-registration delivery point also covers the
-                // "deliver cached last location on register" fast path and OEM builds where the
-                // report path is bypassed, and it honours the exempt list per package.
+                // "deliver cached last location on register" fast path, the exempt-app case, and OEM
+                // builds where the report path is bypassed, and it honours the exempt list per package.
                 acceptHooks = installAcceptHooks(lpm, st);
                 HookEntry.log("Registration.acceptLocationChange hooks: " + acceptHooks);
             }
@@ -644,6 +664,16 @@ final class SystemHooks {
             }
             return null;
         }
+    }
+
+    /** Provider name of a LocationProviderManager, for logging. */
+    private static String managerName(Object manager) {
+        try {
+            Object n = XposedHelpers.getObjectField(manager, "mName");
+            if (n instanceof String) return (String) n;
+        } catch (Throwable ignored) {
+        }
+        return "?";
     }
 
     /** Spoofed LocationResult of the same class as {@code lr}; null if it cannot be built. */

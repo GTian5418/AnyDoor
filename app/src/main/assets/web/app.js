@@ -474,6 +474,9 @@ async function renderSettings() {
   const row = el('div', 'row col');
   row.innerHTML = '<div class="rl"><input type="text" class="wide" id="exempt" placeholder="包名，逗号分隔，如 com.autonavi.minimap"><div class="desc">豁免应用照常收到真实定位。设置后不再注册测试定位源，其他应用改由系统框架直推模拟定位（环境检查里显示「系统直推模式」）。不需要豁免时请留空，测试定位源模式更稳。</div></div>';
   c3.appendChild(row);
+  const tip = el('div', 'card warn-card');
+  tip.innerHTML = '<b>高德 / 微信 / 得力e+ / 分身多开类应用：不用加进作用域，也不要设为豁免。</b><ul class="tight"><li>改定位、屏蔽 WiFi/基站都在系统框架侧完成，只需勾「系统框架」「电话」「蓝牙」。</li><li>把这类应用加进作用域，可能触发它们的自我保护而<b>闪退</b>。</li><li>设成豁免＝它继续用真实定位，那就改不了它。</li></ul>';
+  b.appendChild(tip);
   b.appendChild(c3);
   $('#exempt').value = cfg.exempt || '';
   $('#exempt').onchange = () => saveConfig({ exempt: $('#exempt').value.trim() });
