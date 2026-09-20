@@ -472,7 +472,7 @@ async function renderSettings() {
   b.appendChild(sectionTitle('豁免应用（保留真实定位）'));
   const c3 = el('div', 'card');
   const row = el('div', 'row col');
-  row.innerHTML = '<div class="rl"><input type="text" class="wide" id="exempt" placeholder="包名，逗号分隔，如 com.autonavi.minimap"><div class="desc">设置后会停用全局测试定位源，保留这些应用的系统定位；其他应用依赖真实定位回调，室内可能等待。</div></div>';
+  row.innerHTML = '<div class="rl"><input type="text" class="wide" id="exempt" placeholder="包名，逗号分隔，如 com.autonavi.minimap"><div class="desc">豁免应用照常收到真实定位。设置后不再注册测试定位源，其他应用改由系统框架直推模拟定位（环境检查里显示「系统直推模式」）。不需要豁免时请留空，测试定位源模式更稳。</div></div>';
   c3.appendChild(row);
   b.appendChild(c3);
   $('#exempt').value = cfg.exempt || '';
@@ -821,7 +821,18 @@ async function renderEnv() {
     rows.push(['最近定位下发', e.deliveries > 0 ? 'ok' : 'warn', e.deliveries > 0 ? '本次系统启动已改写 ' + e.deliveries + ' 次；最近 ' + new Date(e.lastDelivery).toLocaleTimeString() : '尚未观察到下发，请开始模拟并在目标应用请求定位']);
   }
   const svc = e.service || {};
-  if (e.started) rows.push(['定位服务', svc.running ? 'ok' : 'bad', svc.running ? `GPS ${svc.gpsReady ? '就绪' : '未就绪'} / 网络 ${svc.networkReady ? '就绪' : '未就绪'}` : '服务未运行，请重新开始模拟']);
+  if (e.started) {
+    if (svc.running && svc.pumpActive) {
+      // no test provider: the framework hook hands fixes straight to app registrations
+      const ok = /^(12\+|legacy)$/.test(e.sysPump || svc.pumpStatus || '');
+      const n = e.injected || svc.pumpInjected || 0;
+      rows.push(['定位服务', ok ? (n > 0 ? 'ok' : 'warn') : 'bad',
+        ok ? ('系统直推模式（未注册测试定位源）：已向应用直推 ' + n + ' 次' + (n > 0 ? '；最近 ' + new Date(e.lastInject || svc.pumpLast).toLocaleTimeString() : '，等待目标应用请求定位'))
+           : '系统直推不可用（系统模块 ' + (e.sysPump || '未响应') + '），请升级模块并重启手机']);
+    } else {
+      rows.push(['定位服务', svc.running ? 'ok' : 'bad', svc.running ? `GPS ${svc.gpsReady ? '就绪' : '未就绪'} / 网络 ${svc.networkReady ? '就绪' : '未就绪'}` : '服务未运行，请重新开始模拟']);
+    }
+  }
   // System framework can grant OP_MOCK_LOCATION for us even when the ROM keeps the stored appop
   // errored (ColorOS/OxygenOS), so treat either signal as granted.
   rows.push(['模拟位置权限', (e.mockAllowed || e.mockGrant) ? 'ok' : 'bad',

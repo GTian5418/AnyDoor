@@ -66,7 +66,8 @@ final class AppHooks {
         HookUtil.hookAll(lm, "getLastKnownLocation", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
-                if (p.args.length > 0 && (Keys.PROBE_PROVIDER.equals(p.args[0]) || Keys.STATE_PROVIDER.equals(p.args[0]))) return;
+                if (p.args.length > 0 && (Keys.PROBE_PROVIDER.equals(p.args[0]) || Keys.STATE_PROVIDER.equals(p.args[0])
+                        || Keys.PUMP_PROVIDER.equals(p.args[0]))) return;
                 if (!st.started() || st.isExempt(pkg) || !st.bool(Keys.APP_HOOK, true)) return;
                 if (p.hasThrowable()) return;
                 String provider = p.args.length > 0 && p.args[0] instanceof String ? (String) p.args[0] : "gps";

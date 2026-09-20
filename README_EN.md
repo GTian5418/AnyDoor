@@ -11,9 +11,9 @@
 
 <p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
 
-**1.3.5 mock-location denied on ColorOS/OxygenOS → WeChat mini-programs / Amap can locate again**: [APK and upgrade notes](../../releases/tag/v1.3.5) · [Changelog](CHANGELOG.md). On some Android 16 ROMs (realme, OnePlus) the environment check was all-green yet threw `SecurityException … not allowed to perform MOCK_LOCATION`; WeChat "send location" worked but mini-programs (e.g. Hello) failed and Amap reported `errorCode 13`. Root cause: even when `appops` reports mock location as allowed, the framework still denies `OP_MOCK_LOCATION`, so our test providers never register and any app that streams updates gets no fix. We now grant the op **inside the framework, only for this app and only for the mock-location op**, so the test providers register on every ROM. **Not retested on ColorOS/OxygenOS hardware**; the logic is verified against AOSP `android16-release`. Fully reboot once after upgrading.
+**1.3.6 exempt-app mode no longer starves other apps: new "direct delivery"**: [APK and upgrade notes](../../releases/tag/v1.3.6) · [Changelog](CHANGELOG.md). Fixes the case where, once an exempt app was configured (or the test provider was disabled, or a ROM refused to register a test provider), other apps could only locate occasionally and got no indoor updates. When no test provider is running, the framework hook now delivers the spoofed fix straight to each app's location registration (exempt apps are skipped and keep their real location). The per-version paths are verified against AOSP source; **not retested on hardware**. Fully reboot once after upgrading.
 
-<sub>Earlier: 1.3.4 fixed repeated real-location stalls and the Android 15/16 `getScanResults`/`ParceledListSlice` WiFi-block leak. See the [Changelog](CHANGELOG.md).</sub>
+<sub>Earlier: 1.3.5 fixed `OP_MOCK_LOCATION` being denied on ColorOS/OxygenOS (test providers failing to register); 1.3.4 fixed repeated real-location stalls and the Android 15/16 WiFi-block leak. See the [Changelog](CHANGELOG.md).</sub>
 
 
 > An Xposed module that rewrites **system-provided locations** by rewriting locations inside `system_server` — no mock-provider flag, no per-app hooking, works indoors without a GPS fix.
@@ -153,7 +153,7 @@ Pipeline: `aapt2 compile/link` → `javac` → `d8` → pack `classes.dex` → `
 | **System** (`SystemHooks`) | Last-location and per-recipient delivery hooks. Android 12+ rewrites Registration.acceptLocationChange results, leaving the upstream provider result and mock cache flags intact for cleanup. |
 | **Phone** (`PhoneHooks`) | Hooks `PhoneInterfaceManager` to hide cell-tower info from ordinary apps. |
 | **App** (`AppHooks`) | For apps in scope, additionally hooks `Location` getters, `isFromMockProvider`, `getLastKnownLocation` etc. as a second line of defense. |
-| **Driver** (`SpoofService`) | Foreground service that keeps pushing coordinates via `addTestProvider` + `setTestProviderLocation`, implementing routes, joystick and jitter. |
+| **Driver** (`SpoofService`) | Foreground service that by default pushes coordinates via `addTestProvider` + `setTestProviderLocation`, implementing routes, joystick and jitter. When an exempt app is set, the test provider is disabled, or a ROM refuses to register one, it falls back to the system-side "direct delivery" that hands the fix to each registration (exempt apps keep their real location). |
 | **Config** | Private app preferences + standard XSharedPreferences; atomic root snapshots for system_server and a permission-checked system state bridge for scoped processes. Revision/protocol validation and a 15-second active-driver lease. No deprecated NSP metadata. |
 | **UI** | A single-page web app (`assets/web/`) in a `WebView`, bridged via `JsBridge`; map is Leaflet + AMap tiles. |
 

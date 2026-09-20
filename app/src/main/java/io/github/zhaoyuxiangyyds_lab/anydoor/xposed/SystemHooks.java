@@ -104,6 +104,8 @@ final class SystemHooks {
                     "addGnssBatchingCallback", "startGnssBatch", "addGnssAntennaInfoListener"}) {
                 HookUtil.hookAll(lms, m, deny);
             }
+            // fallback driver for the cases where no test provider may run (exempt apps, mock op refused)
+            Pump.install(lpm, lms, st);
         }
 
         // ---------- WiFi ----------
@@ -325,7 +327,8 @@ final class SystemHooks {
     /** Summary of what got hooked, for the app's environment check. */
     static String hookSummary() {
         return "last=" + lastHooks + " deliver=" + deliverHooks + " report=" + reportHooks
-                + " accept=" + acceptHooks + " mock=" + mockGrantHooks + " wifi=" + wifiState;
+                + " accept=" + acceptHooks + " mock=" + mockGrantHooks + " wifi=" + wifiState
+                + " pump=" + Pump.status();
     }
 
     /** SSID → <unknown ssid>, network id → -1 on a WifiInfo copy (privacy mode). */
@@ -433,6 +436,19 @@ final class SystemHooks {
                 Bundle b = new Bundle(); b.putInt("protocol", ConfigSnapshot.PROTOCOL);
                 b.putString("state", st.snapshotJson()); state.setExtras(b); p.setResult(state); return;
             }
+            if (Keys.PUMP_PROVIDER.equals(provider)) {
+                // the app's driver asks the framework to hand out one round of spoofed fixes
+                if (!Keys.PKG.equals(HookUtil.callerPackage(p.thisObject, p.args, Binder.getCallingUid()))) return;
+                Pump.kick();
+                Location ack = new Location(Keys.PUMP_PROVIDER);
+                Bundle b = new Bundle();
+                b.putString("pump", Pump.status());
+                b.putLong("injected", Pump.injected());
+                b.putLong("lastInject", Pump.lastInject());
+                ack.setExtras(b);
+                p.setResult(ack);
+                return;
+            }
             if (Keys.PROBE_PROVIDER.equals(provider)) {
                 Location probe = st.build(Keys.PROBE_PROVIDER, null);
                 Bundle b = new Bundle();
@@ -450,6 +466,9 @@ final class SystemHooks {
                 b.putBoolean("mockGrant", mockGrantHooks > 0);
                 b.putInt("sdk", Build.VERSION.SDK_INT);
                 b.putString("hooks", hookSummary());
+                b.putString("pump", Pump.status());
+                b.putLong("injected", Pump.injected());
+                b.putLong("lastInject", Pump.lastInject());
                 probe.setExtras(b);
                 p.setResult(probe);
                 return;
@@ -501,7 +520,7 @@ final class SystemHooks {
 
         @Override
         protected void beforeHookedMethod(MethodHookParam p) {
-            if (!st.started() || p.args.length == 0) return;
+            if (Pump.injecting() || !st.started() || p.args.length == 0) return;
             String pkg = receiverPackage(p.thisObject);
             if (st.isExempt(pkg)) return;
             Location o = p.args[0] instanceof Location ? (Location) p.args[0] : null;
@@ -510,7 +529,7 @@ final class SystemHooks {
             if (st.debug()) HookEntry.log("deliver → spoof for " + pkg);
         }
 
-        private static String receiverPackage(Object receiver) {
+        static String receiverPackage(Object receiver) {
             try {
                 Object id = XposedHelpers.getObjectField(receiver, "mIdentity");
                 return (String) XposedHelpers.getObjectField(id, "mPackageName");
@@ -575,7 +594,7 @@ final class SystemHooks {
 
         @Override
         protected void beforeHookedMethod(MethodHookParam p) {
-            if (!st.started() || p.args.length == 0 || p.args[0] == null) return;
+            if (Pump.injecting() || !st.started() || p.args.length == 0 || p.args[0] == null) return;
             String pkg = registrationPackage(p.thisObject);
             if (st.isExempt(pkg)) return;
             Object manager = null;

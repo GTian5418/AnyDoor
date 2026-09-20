@@ -53,6 +53,9 @@ public class SpoofService extends Service {
     private volatile String providerNote = "";
     private volatile String mockError = "";
     private volatile long lastPush;
+    // system_server fallback driver ("系统直推"), used whenever no test provider is running
+    private volatile String pumpStatus = "";
+    private volatile long pumpInjected, pumpLast, pumpKicks;
 
     // base position (WGS-84) – the un-jittered target
     private double baseLat, baseLng, alt, acc, speed, bearing;
@@ -300,7 +303,30 @@ public class SpoofService extends Service {
         if (!running || !permissionsReady) return;
         providers.push(System.currentTimeMillis());
         lastPush = providers.lastPush();
+        if (!providers.hasProviders()) kickPump();
         publishProviderStatus();
+    }
+
+    /**
+     * No test provider is running (exempt apps configured, driver disabled, or the ROM refused the
+     * mock-location op): ask the framework hook to hand one round of spoofed fixes directly to the
+     * location registrations of non-exempt apps. The real providers keep running for exempt apps.
+     */
+    private void kickPump() {
+        try {
+            Location ack = lm.getLastKnownLocation(Keys.PUMP_PROVIDER);
+            Bundle b = ack != null && Keys.PUMP_PROVIDER.equals(ack.getProvider()) ? ack.getExtras() : null;
+            if (b == null) {
+                pumpStatus = "";
+                return;
+            }
+            pumpKicks++;
+            pumpStatus = b.getString("pump", "");
+            pumpInjected = b.getLong("injected", 0);
+            pumpLast = b.getLong("lastInject", 0);
+        } catch (Throwable t) {
+            pumpStatus = "";
+        }
     }
 
     private void pushLocation(String provider, double lat, double lng) {
@@ -346,9 +372,13 @@ public class SpoofService extends Service {
         if (!running || !permissionsReady) return;
         SharedPreferences c = Config.config(this);
         boolean exempt = !c.getString(Keys.EXEMPT, "").trim().isEmpty();
-        providerNote = exempt ? "已设置豁免应用：停用全局测试定位源，等待真实系统定位回调" : "";
-        providers.reconcile(generation, c.getBoolean(Keys.MOCK_DRIVER, true) && !exempt,
+        boolean driver = c.getBoolean(Keys.MOCK_DRIVER, true);
+        providers.reconcile(generation, driver && !exempt,
                 c.getBoolean(Keys.MOCK_NETWORK, true), SystemClock.elapsedRealtime());
+        if (exempt) providerNote = "已设置豁免应用：测试定位源已停用，其他应用改由系统框架直推模拟定位；豁免应用照常收到真实定位";
+        else if (!driver) providerNote = "测试定位源已关闭：由系统框架直推模拟定位";
+        else if (!providers.hasProviders() && !providers.error().isEmpty()) providerNote = "测试定位源不可用：暂由系统框架直推模拟定位";
+        else providerNote = "";
         publishProviderStatus();
     }
 
@@ -635,6 +665,9 @@ public class SpoofService extends Service {
             o.put("providerNote", providerNote);
             o.put("mockError", mockError);
             o.put("lastPush", lastPush);
+            o.put("pumpActive", running && !providers.hasProviders());
+            o.put("pumpStatus", pumpStatus).put("pumpInjected", pumpInjected)
+                    .put("pumpLast", pumpLast).put("pumpKicks", pumpKicks);
         } catch (Exception ignored) {
         }
         return o;

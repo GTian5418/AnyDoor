@@ -64,4 +64,6 @@ public final class Keys {
     public static final int DEFAULT_INTERVAL = 1000;
     public static final String STATE_PROVIDER = "anydoor.state";
     public static final String PROBE_PROVIDER = "anydoor.probe";
+    /** last-location probe name the driver uses to ask system_server for one round of direct delivery */
+    public static final String PUMP_PROVIDER = "anydoor.pump";
 }

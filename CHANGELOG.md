@@ -1,5 +1,28 @@
 # 更新记录
 
+## 1.3.6 — 2026-09-19（豁免应用模式下其他应用不再断供：新增「系统直推」下发）
+
+### 修复：设置了豁免应用后，其他应用只能偶尔定位成功
+
+- 现象：填写了豁免应用后，未豁免的应用一次性查询（`getLastLocation`）能拿到模拟坐标，但通过 `requestLocationUpdates` / `getCurrentLocation` 持续取位的应用只能偶尔成功、室内长时间没有下发。
+- 根因：1.3.3 起，只要设置了豁免应用就**停用全局测试定位源**（避免测试源覆盖豁免应用的真实来源）。停用后，未豁免应用就只能等待真实系统定位回调再被改写；室内无真实 GPS 时，这个回调可能长时间不来，于是没有持续下发。同理，`mock_driver` 关闭、或某些 ROM 拒绝注册测试定位源时也是同样的空窗。
+- 修复：新增 **系统直推**（system-server 侧回退下发）。当没有测试定位源在运行时，驱动每个周期请求系统框架 Hook 主动向各应用的定位注册**直接投递一次模拟坐标**：
+  - Android 12+：对 `gps/network/fused/passive` 的 `LocationProviderManager` 调用 `deliverToListeners(reg -> reg.acceptLocationChange(result))`；
+  - Android 8.1–11：遍历 `LocationManagerService.mRecordsByProvider`，对每个 `UpdateRecord` 调 `Receiver.callLocationChangedLocked`，并沿用其 `shouldBroadcastSafe(Locked)` 的间隔/位移过滤。
+  - **豁免应用被跳过**（按注册方包名判断），因此它们照常收到真实定位；真实定位源保持运行，系统的 last-location 缓存不被写入模拟数据。注入过程用线程标记（`INJECTING`）短路既有改写 Hook，避免二次替换。
+
+### 环境检查
+
+- 「定位服务」一项在无测试定位源时显示「系统直推模式」，并给出已直推次数与最近时间；系统 Hook 摘要新增 `pump=` 状态。
+- 豁免应用设置说明改为：豁免应用照常收到真实定位，其他应用改由系统框架直推，不需要豁免时留空更稳。
+
+### 验证与升级
+
+- 主机回归全绿（核心/状态/迁移/Shell/镜像/真实定位/诊断/桥接）；Android SDK 编译、DEX、APK 对齐与 v2/v3 签名校验通过，签名证书与既往一致，可覆盖升级。
+- 系统直推属 Xposed 侧代码，各 Android 版本路径经 AOSP 源码（8.1/9/10/11 与 `android16-release`）核对，**未在真机复测**；华为 Mate 9 / Android 9 仅确认编译与启动无回归。
+- 覆盖安装后请**完整重启一次手机**，让系统框架侧模块随 v1.3.6 重新注入。作用域仍需勾选「系统框架」「电话」「蓝牙」。
+
+
 ## 1.3.5 — 2026-09-18（ColorOS/OxygenOS 等 ROM 模拟定位被拒修复 → 微信小程序/高德重新可定位）
 
 修复用户反馈的两处（realme、一加 等 Android 16 机型）：一加机型环境检查全绿但底部报 `java.lang.SecurityException: … not allowed to perform MOCK_LOCATION`；微信本身“发送位置”能定位，但小程序（如哈啰）定位失败、高德类应用报 `errorCode=13 获取到的基站和WIFI信息为空`。两者其实是同一个根因。

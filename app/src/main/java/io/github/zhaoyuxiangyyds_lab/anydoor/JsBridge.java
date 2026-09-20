@@ -127,6 +127,9 @@ public class JsBridge {
                 o.put("mockGrant", probe.getBoolean("mockGrant", false));
                 o.put("sysSdk", probe.getInt("sdk", 0));
                 o.put("sysHooks", probe.getString("hooks", ""));
+                o.put("sysPump", probe.getString("pump", ""));
+                o.put("injected", probe.getLong("injected", 0));
+                o.put("lastInject", probe.getLong("lastInject", 0));
             }
             o.put("started", Config.config(act).getBoolean(Keys.STARTED, false));
             RootShell.Result cli = RootShell.run("ls /data/adb/lspd/cli >/dev/null 2>&1 && echo yes");

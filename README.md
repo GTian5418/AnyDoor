@@ -11,9 +11,9 @@
 
 <p align="center"><b>简体中文</b> · <a href="README_EN.md">English</a></p>
 
-**1.3.5 ColorOS/OxygenOS 等 ROM 模拟定位被拒修复 → 微信小程序/高德重新可定位**：[下载 APK 与升级说明](../../releases/tag/v1.3.5) · [完整更新记录](CHANGELOG.md)。修复 realme/一加 等 Android 16 机型上「环境检查全绿却报 `SecurityException … not allowed to perform MOCK_LOCATION`」「微信发送位置正常但小程序（哈啰）定位失败、高德报 errorCode 13」——根因是这些 ROM 即便 `appops` 显示已允许，系统框架仍拒绝 `OP_MOCK_LOCATION`，导致测试定位源注册失败、持续取位的应用拿不到坐标。现在在系统框架进程内**仅为本应用、仅对模拟定位这个 op** 放行，测试定位源在各 ROM 都能注册。**未在 ColorOS/OxygenOS 真机复测**，逻辑基于 AOSP `android16-release` 源码核对；升级后请完整重启一次手机。
+**1.3.6 豁免应用模式下其他应用不再断供：新增「系统直推」**：[下载 APK 与升级说明](../../releases/tag/v1.3.6) · [完整更新记录](CHANGELOG.md)。修复设置豁免应用（或关闭测试定位源、或 ROM 拒绝注册测试源）后，其他应用只能偶尔定位成功、室内长时间没有下发的问题。现在没有测试定位源时，系统框架会直接把模拟坐标投递给各应用的定位注册（豁免应用被跳过、照常收到真实定位）。各 Android 版本路径经 AOSP 源码核对，**未在真机复测**；升级后请完整重启一次手机。
 
-<sub>更早：1.3.4 修复真实定位连续使用卡住，以及 Android 15/16 `getScanResults` 返回 `ParceledListSlice` 导致的 WiFi 屏蔽失效／网络定位泄漏。见 [更新记录](CHANGELOG.md)。</sub>
+<sub>更早：1.3.5 修复 ColorOS/OxygenOS 等 ROM 上 `OP_MOCK_LOCATION` 被拒导致测试定位源注册失败；1.3.4 修复真实定位连续使用卡住与 Android 15/16 WiFi 屏蔽失效。见 [更新记录](CHANGELOG.md)。</sub>
 
 
 > 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。
@@ -189,7 +189,7 @@ bash build.sh
 | **系统层**（`SystemHooks`） | Hook 最后位置与逐接收者下发：Android ≤ 11 使用 Receiver，Android 12+ 使用各 Registration 的 `acceptLocationChange`。不再在 `onReportLocation` 提前替换系统缓存；保留原始 mock 缓存标记供系统停止测试源时清理。 |
 | **电话层**（`PhoneHooks`） | hook `PhoneInterfaceManager`，对普通 App 隐藏基站信息。 |
 | **应用层**（`AppHooks`） | 对加入作用域的 App 额外 hook `Location` getter（仅 gps/network/fused/passive 来源）、`isFromMockProvider`、`getLastKnownLocation` 等，二次兜底。不 hook `hasAltitude()` 之类决定 Parcel 布局的方法。 |
-| **驱动**（`SpoofService`） | 前台服务，用 `addTestProvider` + `setTestProviderLocation` 持续推送坐标，实现路线移动、摇杆、随机漂移；室内无信号也有定位。 |
+| **驱动**（`SpoofService`） | 前台服务，默认用 `addTestProvider` + `setTestProviderLocation` 持续推送坐标，实现路线移动、摇杆、随机漂移；室内无信号也有定位。设置了豁免应用、关闭测试源或 ROM 拒绝注册测试源时，改由系统层「系统直推」逐注册下发（豁免应用不受影响，保留真实定位）。 |
 | **配置** | 私有 SharedPreferences + 标准 XSharedPreferences API；Root 原子快照供系统读取，受定位权限约束的系统状态桥供作用域内进程读取。带协议、递增版本和 15 秒运行心跳有效期，不再声明 `xposedsharedprefs`。 |
 | **界面** | `WebView` 承载单页应用（`assets/web/`），`JsBridge` 做 JS↔Java 桥接；地图用 Leaflet + 高德瓦片。 |
 
