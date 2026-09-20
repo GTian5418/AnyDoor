@@ -141,7 +141,12 @@ final class SystemHooks {
         Class<?> wifi = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", cl);
         if (wifi != null) installWifiHooks(wifi, st);
         else wifiState = "waiting";
+        // ConnectivityService lives in the com.android.tethering APEX and, since Android 14, is
+        // jarjar-repackaged to android.net.connectivity.com.android.server.ConnectivityService, so a
+        // name lookup misses it. Grab the real instance from the initializer that SystemServiceManager
+        // starts (name-agnostic) instead of guessing the class name.
         Class<?> conn = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", cl);
+        if (conn == null) conn = XposedHelpers.findClassIfExists("android.net.connectivity.com.android.server.ConnectivityService", cl);
         if (conn != null) installConnectivityHooks(conn, st);
         else connState = "waiting";
         if (wifi == null || conn == null) {
@@ -151,28 +156,39 @@ final class SystemHooks {
 
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) {
-                    if (p.args.length == 0 || p.args[0] == null) return;
+                    if (wifiDone || p.args.length == 0 || p.args[0] == null) return;
                     Class<?> c = p.args[0] instanceof Class ? (Class<?>) p.args[0] : p.args[0].getClass();
-                    String name = c.getName();
-                    if (!wifiDone && "com.android.server.wifi.WifiService".equals(name)) {
-                        wifiDone = true;
-                        Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", c.getClassLoader());
-                        if (impl == null) {
-                            wifiState = "impl-missing";
-                            HookEntry.log("WifiService loaded but WifiServiceImpl not found in " + c.getClassLoader());
-                            return;
-                        }
-                        installWifiHooks(impl, st);
-                    } else if (!connDone && "com.android.server.ConnectivityServiceInitializer".equals(name)) {
-                        connDone = true;
-                        Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", c.getClassLoader());
-                        if (impl == null) {
-                            connState = "impl-missing";
-                            HookEntry.log("ConnectivityService not found in " + c.getClassLoader());
-                            return;
-                        }
-                        installConnectivityHooks(impl, st);
+                    if (!"com.android.server.wifi.WifiService".equals(c.getName())) return;
+                    wifiDone = true;
+                    Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", c.getClassLoader());
+                    if (impl == null) {
+                        wifiState = "impl-missing";
+                        HookEntry.log("WifiService loaded but WifiServiceImpl not found in " + c.getClassLoader());
+                        return;
                     }
+                    installWifiHooks(impl, st);
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    // startService(Class) / startService(SystemService) both yield the started service
+                    if (connDone) return;
+                    Object svc = p.getResult();
+                    if (svc == null || !svc.getClass().getName().contains("ConnectivityServiceInitializer")) {
+                        svc = null;
+                        for (Object a : p.args) {
+                            if (a != null && a.getClass().getName().contains("ConnectivityServiceInitializer")) { svc = a; break; }
+                        }
+                        if (svc == null) return;
+                    }
+                    connDone = true;
+                    Object cs = fieldOfType(svc, "ConnectivityService");
+                    if (cs == null) {
+                        connState = "no-instance";
+                        HookEntry.log("ConnectivityServiceInitializer started but no ConnectivityService field found");
+                        return;
+                    }
+                    installConnectivityHooks(cs.getClass(), st);
                 }
             });
             if (k == 0) {
@@ -269,8 +285,46 @@ final class SystemHooks {
         for (String m : new String[]{"createWithLocationInfoSanitizedIfNecessaryWhenParceled", "maybeSanitizeLocationInfoForCaller"}) {
             n += HookUtil.hookAll(conn, m, mask);
         }
+        if (n == 0) {
+            // OEM / newer builds may rename the sanitizer; match by shape: a method that both takes and
+            // returns a NetworkCapabilities and has "sanitiz" in its name.
+            try {
+                for (java.lang.reflect.Method m : conn.getDeclaredMethods()) {
+                    if (!m.getName().toLowerCase(java.util.Locale.US).contains("sanitiz")) continue;
+                    if (!android.net.NetworkCapabilities.class.isAssignableFrom(m.getReturnType())) continue;
+                    boolean takesNc = false;
+                    for (Class<?> pt : m.getParameterTypes()) if (android.net.NetworkCapabilities.class.isAssignableFrom(pt)) takesNc = true;
+                    if (!takesNc) continue;
+                    try {
+                        de.robv.android.xposed.XposedBridge.hookMethod(m, mask);
+                        n++;
+                    } catch (Throwable t) {
+                        HookEntry.log("hook " + m.getName() + " failed: " + t);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         connState = n > 0 ? "ok" : "no-methods";
         HookEntry.log("connectivity hooks installed: " + n + " via " + conn.getClassLoader());
+    }
+
+    /** First declared-field value of {@code owner} whose class simple name equals {@code simpleName}. */
+    private static Object fieldOfType(Object owner, String simpleName) {
+        try {
+            for (java.lang.reflect.Field f : owner.getClass().getDeclaredFields()) {
+                f.setAccessible(true);
+                Object v;
+                try {
+                    v = f.get(owner);
+                } catch (Throwable t) {
+                    continue;
+                }
+                if (v != null && simpleName.equals(v.getClass().getSimpleName())) return v;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /**

@@ -1,5 +1,17 @@
 # 更新记录
 
+## 1.4.2 — 2026-09-20（修复 Android 14+ 已连接 WiFi 的 BSSID 屏蔽在部分机型失效 conn=impl-missing）
+
+### 修复：已连接 WiFi 的 BSSID 未被屏蔽（一加/Android 16 等）
+真机诊断（OnePlus PMB110 / Android 16）显示系统 Hook 摘要里 `conn=impl-missing`：`ConnectivityService` 的定位脱敏改写没能装上，未加入作用域的应用仍能经 `NetworkCapabilities.getTransportInfo()` 读到当前已连接 WiFi 的 BSSID，进而被高德/腾讯等反查位置、把定位拉回真实附近。
+- 根因：Android 14 起连接组件被 jarjar 重命名，`ConnectivityService` 实际类名变成 `android.net.connectivity.com.android.server.ConnectivityService`，按原名 `com.android.server.ConnectivityService` 找不到。
+- 修复：不再靠猜类名——在 `SystemServiceManager.startService` 启动 `ConnectivityServiceInitializer` 后，直接从它的字段里取到真正的 `ConnectivityService` 实例再挂钩（与包名/jarjar 无关）；脱敏方法名若被改，也按"入参与返回都是 `NetworkCapabilities`、方法名含 sanitiz"的形状兜底匹配。环境检查此项应显示 `conn=ok`。
+- WiFi 扫描列表屏蔽（`wifi=ok`）与基站屏蔽（`cellgate`）此前已正常，本次只补上"已连接 WiFi"这一路。
+
+### 说明
+- 其余下发路径在该机型上已正常：`report=1 accept=2 pump=12+`（1.4.1 的 `onReportLocation` 改写与逐注册改写都装上了，运行时观察到大量下发）。`deliver=0` 在 Android 12+ 属正常（逐接收者路径只用于 ≤11）。
+- 依据 AOSP `android16-release` 与连接 APEX 的 jarjar 规则核对，**未在真机复测**；主机回归全绿。升级后请**完整重启一次手机**。
+
 ## 1.4.1 — 2026-09-20（修复模拟位置几秒后又跳回真实位置；作用域内应用不再因 hook 闪退）
 
 ### 修复：定位停留几秒又回到真实位置（高德、微信、得力e+、分身类应用）
