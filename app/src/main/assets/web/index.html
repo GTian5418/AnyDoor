@@ -117,12 +117,16 @@
         <div class="card-title">起点与终点</div>
         <div class="ep"><span class="ep-dot start"></span><span class="ep-text" id="epStartText">当前模拟位置</span><button class="mini" id="epStartBtn">更改</button></div>
         <div class="ep"><span class="ep-dot end"></span><span class="ep-text" id="epEndText">未设置终点</span><button class="mini" id="epEndBtn">选择</button></div>
+        <div id="viaList"></div>
+        <div class="ep via-add"><span class="ep-dot via"></span><span class="ep-text muted small">途经点（可选）：让路线必须经过某条路或某个地方</span><button class="mini" id="viaAddBtn">添加</button></div>
         <div class="toolbar" id="modeChips">
           <button class="chip on" data-mode="walking">🚶 步行</button><button class="chip" data-mode="running">🏃 跑步</button>
           <button class="chip" data-mode="bicycling">🚲 骑行</button><button class="chip" data-mode="driving">🚗 驾车</button>
         </div>
         <button class="chip primary full" id="routePlanBtn">规划路线（沿真实道路）</button>
         <div class="muted small" id="planSummary">起点默认为当前模拟位置，选一个终点后即可规划。</div>
+        <div class="list compact hidden" id="routeAlts"></div>
+        <div class="muted small hidden" id="routeAltsHint">点选一条备选路线（地图上灰色线也可直接点），或添加途经点让路线改走别的路。</div>
       </div>
     </div>
 

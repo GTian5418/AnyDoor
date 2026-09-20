@@ -38,13 +38,46 @@ final class PhoneHooks {
                 else p.setResult(null);
             }
         };
-        int n = 0;
+        // Android 10+: TelephonyManager.requestCellInfoUpdate(...) is the modern replacement for
+        // getAllCellInfo and is answered asynchronously through ICellInfoCallback. Complete it with
+        // an empty list instead of the real cells, so the caller's flow finishes normally.
+        XC_MethodHook emptyCells = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                if (!SystemHooks.shouldBlock(st, p.thisObject, p.args, Keys.CELL_BLOCK)) return;
+                for (Object a : p.args) {
+                    if (a instanceof android.os.IInterface && a.getClass().getName().contains("CellInfoCallback")) {
+                        HookUtil.deliverEmptyCells(a, null);
+                        break;
+                    }
+                }
+                p.setResult(null);
+            }
+        };
+        // TelephonyManager.getServiceState(): since Android 10 the ServiceState carries the serving
+        // cell identity (NetworkRegistrationInfo) for callers with fine location; hand out the
+        // location-sanitized copy the framework itself uses for callers without that permission.
+        XC_MethodHook noCellInState = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (p.getThrowable() != null || p.getResult() == null) return;
+                if (!SystemHooks.shouldBlock(st, p.thisObject, p.args, Keys.CELL_BLOCK)) return;
+                p.setResult(HookUtil.sanitizeServiceState(p.getResult()));
+            }
+        };
+        int n = 0, k = 0, s = 0;
         for (Class<?> c : targets) {
             for (String m : new String[]{"getAllCellInfo", "getCellLocation", "getNeighboringCellInfo"}) {
                 n += HookUtil.hookAll(c, m, hide);
             }
+            for (String m : new String[]{"requestCellInfoUpdate", "requestCellInfoUpdateWithWorkSource"}) {
+                k += HookUtil.hookAll(c, m, emptyCells);
+            }
+            for (String m : new String[]{"getServiceStateForSubscriber", "getServiceStateForSlot"}) {
+                s += HookUtil.hookAll(c, m, noCellInState);
+            }
         }
-        HookEntry.log("phone hooks installed: " + n);
+        HookEntry.log("phone hooks installed: " + n + " cell, " + k + " cellUpdate, " + s + " serviceState");
 
         // ---- privacy mode: IMEI / MEID / IMSI / ICCID / phone number for normal apps ----
         XC_MethodHook fakeId = new XC_MethodHook() {

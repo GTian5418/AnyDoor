@@ -20,13 +20,13 @@ assert hashlib.sha256(KXML.read_bytes()).hexdigest()=='f264dd9f79a1fde10ce5ecc53
 assert ANDROID.exists(), 'Set ANDROID_JAR or ANDROID_SDK_ROOT'
 CLASSES=OUT/'classes';CLASSES.mkdir(exist_ok=True)
 cp=os.pathsep.join(map(str,[JSON,KXML,ANDROID]))
-files=[SRC/n for n in ['Keys.java','GeoMath.java','ConfigSnapshot.java','ProviderController.java','RootShell.java','MirrorCommand.java','LegacyPrefsMigration.java','xposed/SpoofState.java']]
+files=[SRC/n for n in ['Keys.java','GeoMath.java','Geocoder.java','ConfigSnapshot.java','ProviderController.java','RootShell.java','MirrorCommand.java','LegacyPrefsMigration.java','xposed/SpoofState.java']]
 files+=list((ROOT/'tests/stubs').rglob('*.java'))
 files+=list((ROOT/'tests/io').rglob('*.java'))
 subprocess.run(['javac','--release','8','-encoding','UTF-8','-cp',cp,'-d',str(CLASSES)]+list(map(str,files)),check=True)
 runtime=os.pathsep.join(map(str,[CLASSES,JSON,KXML,ANDROID]))
 base=['java',f'-Dtest.mirror={OUT / "mirror.json"}','-cp',runtime]
-for cls in ['CoreTest','xposed.StateTest','MigrationTest']:
+for cls in ['CoreTest','xposed.StateTest','MigrationTest','RouteTest']:
     subprocess.run(base+['io.github.zhaoyuxiangyyds_lab.anydoor.'+cls],check=True)
 bash=os.environ.get('TEST_BASH') or (r'C:/Program Files/Git/bin/bash.exe' if os.name=='nt' else shutil.which('bash'))
 subprocess.run(base+['io.github.zhaoyuxiangyyds_lab.anydoor.ShellTest',bash],check=True)

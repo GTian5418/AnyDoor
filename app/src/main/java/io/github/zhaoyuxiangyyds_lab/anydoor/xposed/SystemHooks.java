@@ -34,10 +34,10 @@ final class SystemHooks {
     private static final int EVENT_CELL_INFO_CHANGED = 11;
 
     /** Hook counts, reported back to the app through the probe provider (see LastLocationHook). */
-    private static volatile int lastHooks, deliverHooks, reportHooks, acceptHooks, mockGrantHooks;
+    private static volatile int lastHooks, deliverHooks, reportHooks, acceptHooks, mockGrantHooks, cellGateHooks;
     private static final java.util.concurrent.atomic.AtomicLong deliveries = new java.util.concurrent.atomic.AtomicLong();
     private static volatile long lastDelivery;
-    private static volatile String wifiState = "none";
+    private static volatile String wifiState = "none", connState = "none";
     private static volatile int mockOp = -2;
 
     static void install(XC_LoadPackage.LoadPackageParam lp, final SpoofState st) {
@@ -89,57 +89,76 @@ final class SystemHooks {
                 acceptHooks = installAcceptHooks(lpm, st);
                 HookEntry.log("Registration.acceptLocationChange hooks: " + acceptHooks);
             }
-            // raw GNSS data would reveal the real position
+            // raw GNSS data (measurements, navigation messages, NMEA sentences) would reveal the
+            // real position
             XC_MethodHook deny = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) {
                     if (!st.started() || !st.bool(Keys.GNSS_BLOCK, true)) return;
-                    if (HookUtil.isSystemUid(Binder.getCallingUid())) return;
+                    int uid = Binder.getCallingUid();
+                    if (HookUtil.isSystemUid(uid)) return;
+                    if (st.isExempt(HookUtil.callerPackage(p.thisObject, p.args, uid))) return;
                     Class<?> rt = ((java.lang.reflect.Method) p.method).getReturnType();
                     if (rt == boolean.class || rt == Boolean.class) p.setResult(false);
                     else if (rt == void.class) p.setResult(null);
                 }
             };
             for (String m : new String[]{"addGnssMeasurementsListener", "addGnssNavigationMessageListener",
-                    "addGnssBatchingCallback", "startGnssBatch", "addGnssAntennaInfoListener"}) {
+                    "addGnssBatchingCallback", "startGnssBatch", "addGnssAntennaInfoListener",
+                    "addNmeaListener", "registerGnssNmeaCallback"}) {
                 HookUtil.hookAll(lms, m, deny);
             }
             // fallback driver for the cases where no test provider may run (exempt apps, mock op refused)
             Pump.install(lpm, lms, st);
         }
 
-        // ---------- WiFi ----------
+        // ---------- WiFi / connectivity ----------
         // Up to Android 10 WifiServiceImpl lives in services.jar; since Android 11 it is in the
         // com.android.wifi APEX, loaded by SystemServiceManager.startServiceFromJar() through a
-        // separate PathClassLoader that lp.classLoader cannot see. Catch the class when the
-        // service is started.
+        // separate PathClassLoader that lp.classLoader cannot see. The same happened to
+        // ConnectivityService with Android 12 (com.android.tethering APEX). Catch both classes
+        // when their service is started.
         Class<?> wifi = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", cl);
-        if (wifi != null) {
-            installWifiHooks(wifi, st);
-        } else {
-            wifiState = "waiting";
+        if (wifi != null) installWifiHooks(wifi, st);
+        else wifiState = "waiting";
+        Class<?> conn = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", cl);
+        if (conn != null) installConnectivityHooks(conn, st);
+        else connState = "waiting";
+        if (wifi == null || conn == null) {
             Class<?> ssm = XposedHelpers.findClassIfExists("com.android.server.SystemServiceManager", cl);
             int k = ssm == null ? 0 : HookUtil.hookAll(ssm, "startService", new XC_MethodHook() {
-                private boolean done;
+                private boolean wifiDone, connDone;
 
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) {
-                    if (done || p.args.length == 0 || p.args[0] == null) return;
+                    if (p.args.length == 0 || p.args[0] == null) return;
                     Class<?> c = p.args[0] instanceof Class ? (Class<?>) p.args[0] : p.args[0].getClass();
-                    if (!"com.android.server.wifi.WifiService".equals(c.getName())) return;
-                    done = true;
-                    Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", c.getClassLoader());
-                    if (impl == null) {
-                        wifiState = "impl-missing";
-                        HookEntry.log("WifiService loaded but WifiServiceImpl not found in " + c.getClassLoader());
-                        return;
+                    String name = c.getName();
+                    if (!wifiDone && "com.android.server.wifi.WifiService".equals(name)) {
+                        wifiDone = true;
+                        Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.wifi.WifiServiceImpl", c.getClassLoader());
+                        if (impl == null) {
+                            wifiState = "impl-missing";
+                            HookEntry.log("WifiService loaded but WifiServiceImpl not found in " + c.getClassLoader());
+                            return;
+                        }
+                        installWifiHooks(impl, st);
+                    } else if (!connDone && "com.android.server.ConnectivityServiceInitializer".equals(name)) {
+                        connDone = true;
+                        Class<?> impl = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", c.getClassLoader());
+                        if (impl == null) {
+                            connState = "impl-missing";
+                            HookEntry.log("ConnectivityService not found in " + c.getClassLoader());
+                            return;
+                        }
+                        installConnectivityHooks(impl, st);
                     }
-                    installWifiHooks(impl, st);
                 }
             });
             if (k == 0) {
-                wifiState = "no-loader";
-                HookEntry.log("WifiServiceImpl not in system_server and SystemServiceManager.startService not hookable");
+                if (wifi == null) wifiState = "no-loader";
+                if (conn == null) connState = "no-loader";
+                HookEntry.log("WifiServiceImpl/ConnectivityService not in system_server and SystemServiceManager.startService not hookable");
             }
         }
 
@@ -166,9 +185,72 @@ final class SystemHooks {
                 }
             };
             for (String m : new String[]{"listen", "listenForSubscriber", "listenWithEventList"}) HookUtil.hookAll(tr, m, listen);
+            // Android 10+: every cell-location / cell-info / service-state delivery first asks
+            // checkFineLocationAccess(Record, minSdk) / checkCoarseLocationAccess(Record, minSdk).
+            // Answering "no" for a blocked registration makes the registry skip the cell events
+            // it still has and hand out location-sanitized ServiceState copies (no cell identity),
+            // exactly as it does for apps without location permission.
+            XC_MethodHook noAccess = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args.length == 0 || p.args[0] == null) return;
+                    if (registrationBlocked(st, p.args[0])) p.setResult(false);
+                }
+            };
+            cellGateHooks = HookUtil.hookAll(tr, "checkFineLocationAccess", noAccess)
+                    + HookUtil.hookAll(tr, "checkCoarseLocationAccess", noAccess);
+            HookEntry.log("TelephonyRegistry location gate hooks: " + cellGateHooks);
         }
         installIdentityHooks(cl, st);
         HookEntry.log("system hooks installed (sdk " + android.os.Build.VERSION.SDK_INT + ")");
+    }
+
+    /** TelephonyRegistry.Record → should its cell data be withheld (cell block on, normal non-exempt app). */
+    private static boolean registrationBlocked(SpoofState st, Object record) {
+        String pkg = null;
+        int uid = -1;
+        try {
+            Object o = XposedHelpers.getObjectField(record, "callingPackage");
+            if (o instanceof String) pkg = (String) o;
+        } catch (Throwable ignored) {
+        }
+        try {
+            uid = XposedHelpers.getIntField(record, "callerUid");
+        } catch (Throwable ignored) {
+        }
+        return shouldBlockPackage(st, uid, pkg, Keys.CELL_BLOCK);
+    }
+
+    /**
+     * ConnectivityService: the connected WiFi's BSSID travels to apps inside
+     * NetworkCapabilities.getTransportInfo() (getNetworkCapabilities and every NetworkCallback);
+     * both paths pass through the location-sanitizing copy method, so mask it there.
+     */
+    private static void installConnectivityHooks(Class<?> conn, final SpoofState st) {
+        XC_MethodHook mask = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (p.getThrowable() != null || p.getResult() == null) return;
+                String pkg = null;
+                List<Integer> ints = new ArrayList<>();
+                for (Object a : p.args) {
+                    if (a instanceof String && pkg == null) pkg = (String) a;
+                    else if (a instanceof Integer) ints.add((Integer) a);
+                }
+                // (nc, includeLocationSensitiveInfo, callerPid, callerUid, callerPkgName, tag) on 12+,
+                // (nc, callerUid, callerPkgName) on 11
+                int uid = ints.size() >= 2 ? ints.get(1) : ints.size() == 1 ? ints.get(0) : -1;
+                if (!shouldBlockPackage(st, uid, pkg, Keys.WIFI_BLOCK)) return;
+                Object masked = HookUtil.maskWifiTransport(p.getResult(), st.privacy());
+                if (masked != null) p.setResult(masked);
+            }
+        };
+        int n = 0;
+        for (String m : new String[]{"createWithLocationInfoSanitizedIfNecessaryWhenParceled", "maybeSanitizeLocationInfoForCaller"}) {
+            n += HookUtil.hookAll(conn, m, mask);
+        }
+        connState = n > 0 ? "ok" : "no-methods";
+        HookEntry.log("connectivity hooks installed: " + n + " via " + conn.getClassLoader());
     }
 
     /**
@@ -328,11 +410,11 @@ final class SystemHooks {
     static String hookSummary() {
         return "last=" + lastHooks + " deliver=" + deliverHooks + " report=" + reportHooks
                 + " accept=" + acceptHooks + " mock=" + mockGrantHooks + " wifi=" + wifiState
-                + " pump=" + Pump.status();
+                + " conn=" + connState + " cellgate=" + cellGateHooks + " pump=" + Pump.status();
     }
 
     /** SSID → <unknown ssid>, network id → -1 on a WifiInfo copy (privacy mode). */
-    private static void hideSsid(Object wifiInfo) {
+    static void hideSsid(Object wifiInfo) {
         try {
             Class<?> ssidCls = Class.forName("android.net.wifi.WifiSsid");
             Object none = null;
@@ -412,7 +494,14 @@ final class SystemHooks {
         if (!(st.started() || st.privacy()) || !st.bool(featureKey, true)) return false;
         int uid = Binder.getCallingUid();
         if (HookUtil.isSystemUid(uid)) return false;
-        String pkg = HookUtil.callerPackage(service, args, uid);
+        return shouldBlockPackage(st, uid, HookUtil.callerPackage(service, args, uid), featureKey);
+    }
+
+    /** Same gate for a known (uid, package) pair, e.g. a stored registration; uid -1 = unknown. */
+    static boolean shouldBlockPackage(SpoofState st, int uid, String pkg, String featureKey) {
+        if (!(st.started() || st.privacy()) || !st.bool(featureKey, true)) return false;
+        if (uid >= 0 && HookUtil.isSystemUid(uid)) return false;
+        if (pkg == null) return uid >= 0;   // unnamed caller: block only when we know it is a normal app
         return !HookUtil.isInfraPackage(pkg) && !st.isExempt(pkg);
     }
 
@@ -436,10 +525,12 @@ final class SystemHooks {
                 Bundle b = new Bundle(); b.putInt("protocol", ConfigSnapshot.PROTOCOL);
                 b.putString("state", st.snapshotJson()); state.setExtras(b); p.setResult(state); return;
             }
-            if (Keys.PUMP_PROVIDER.equals(provider)) {
-                // the app's driver asks the framework to hand out one round of spoofed fixes
+            if (provider != null && provider.startsWith(Keys.PUMP_PROVIDER)) {
+                // the app's driver asks the framework to hand out one round of spoofed fixes;
+                // "anydoor.pump:gps,network" limits the round to the providers without a test provider
                 if (!Keys.PKG.equals(HookUtil.callerPackage(p.thisObject, p.args, Binder.getCallingUid()))) return;
-                Pump.kick();
+                int colon = provider.indexOf(':');
+                Pump.kick(colon > 0 ? provider.substring(colon + 1) : null);
                 Location ack = new Location(Keys.PUMP_PROVIDER);
                 Bundle b = new Bundle();
                 b.putString("pump", Pump.status());
@@ -466,6 +557,9 @@ final class SystemHooks {
                 b.putBoolean("mockGrant", mockGrantHooks > 0);
                 b.putInt("sdk", Build.VERSION.SDK_INT);
                 b.putString("hooks", hookSummary());
+                b.putString("wifi", wifiState);
+                b.putString("conn", connState);
+                b.putInt("cellGate", cellGateHooks);
                 b.putString("pump", Pump.status());
                 b.putLong("injected", Pump.injected());
                 b.putLong("lastInject", Pump.lastInject());

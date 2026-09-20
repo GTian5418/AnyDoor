@@ -130,6 +130,9 @@ public class JsBridge {
                 o.put("sysPump", probe.getString("pump", ""));
                 o.put("injected", probe.getLong("injected", 0));
                 o.put("lastInject", probe.getLong("lastInject", 0));
+                o.put("sysWifi", probe.getString("wifi", ""));
+                o.put("sysConn", probe.getString("conn", ""));
+                o.put("sysCellGate", probe.getInt("cellGate", -1));
             }
             o.put("started", Config.config(act).getBoolean(Keys.STARTED, false));
             RootShell.Result cli = RootShell.run("ls /data/adb/lspd/cli >/dev/null 2>&1 && echo yes");

@@ -134,13 +134,44 @@ final class Pump {
         return null;
     }
 
-    /** Called from the binder thread of the probe; the actual delivery runs on our own thread. */
-    static void kick() {
+    /** providers to inject on the next round: null = all, else those without a running test provider */
+    private static volatile java.util.Set<String> only;
+
+    /**
+     * Called from the binder thread of the probe; the actual delivery runs on our own thread.
+     *
+     * @param providers comma separated provider names that have no test provider right now, or
+     *                  null/empty for every provider
+     */
+    static void kick(String providers) {
         lastKick = SystemClock.elapsedRealtime();
+        java.util.Set<String> set = null;
+        if (providers != null && !providers.trim().isEmpty()) {
+            set = new java.util.HashSet<>();
+            for (String s : providers.split(",")) {
+                String name = s.trim();
+                if (!name.isEmpty()) set.add(name);
+            }
+            // a missing gps/network test provider also starves fused/passive, which are fed by them
+            if (!set.isEmpty()) {
+                set.add("fused");
+                set.add("passive");
+            } else set = null;
+        }
+        only = set;
         Handler h = handler();
         if (h == null) return;
         h.removeCallbacks(INJECT);
         h.post(INJECT);
+    }
+
+    static void kick() {
+        kick(null);
+    }
+
+    private static boolean wanted(String provider) {
+        java.util.Set<String> set = only;
+        return set == null || set.contains(provider);
     }
 
     private static synchronized Handler handler() {
@@ -177,6 +208,7 @@ final class Pump {
         ensureManagers();
         int total = 0;
         for (String provider : PROVIDERS) {
+            if (!wanted(provider)) continue;
             Object manager = MANAGERS.get(provider);
             if (manager == null) continue;
             final Location fix = st.build(provider, null);
@@ -246,6 +278,12 @@ final class Pump {
 
     // ------------------------------------------------------------------ Android 8.1 - 11
 
+    /**
+     * Mirrors LocationManagerService.handleLocationChangedLocked (8.1 - 11): interval / distance
+     * filter, app-op note, coarse copy for coarse-only receivers, numUpdates bookkeeping, and the
+     * disposal of exhausted records and dead receivers, so one-shot requests really end after
+     * their update and apps in the background are not fed behind the system's back.
+     */
     @SuppressWarnings("unchecked")
     private static int injectLegacy(SpoofState st) throws Exception {
         Object service = lms;
@@ -257,42 +295,155 @@ final class Pump {
             if (records == null) return 0;
             long now = SystemClock.elapsedRealtime();
             for (String provider : PROVIDERS) {
+                if (!wanted(provider)) continue;
                 List<Object> list = records.get(provider);
                 if (list == null || list.isEmpty()) continue;
                 Location fix = st.build(provider, null);
+                Location coarse = null;
+                List<Object> dead = new ArrayList<>(), deadReceivers = new ArrayList<>();
                 for (Object r : new ArrayList<>(list)) {
                     Object receiver = XposedHelpers.getObjectField(r, "mReceiver");
                     String pkg = SystemHooks.DeliverHook.receiverPackage(receiver);
                     if (pkg == null || st.isExempt(pkg)) continue;
+                    Location deliver = fix;
+                    if (isCoarseReceiver(receiver)) {
+                        if (coarse == null) coarse = coarsen(service, provider, fix);
+                        deliver = coarse;
+                    }
                     Object last = XposedHelpers.getObjectField(r, "mLastFixBroadcast");
+                    boolean ok = true;
                     if (last != null) {
-                        boolean ok;
                         try {
-                            ok = (Boolean) XposedHelpers.callStaticMethod(lmsClass, shouldBroadcast, fix, last, r, now);
+                            ok = (Boolean) XposedHelpers.callStaticMethod(lmsClass, shouldBroadcast, deliver, last, r, now);
                         } catch (Throwable t) {
                             ok = true;
                         }
-                        if (!ok) continue;
                     }
-                    if (last instanceof Location) ((Location) last).set(fix);
-                    else XposedHelpers.setObjectField(r, "mLastFixBroadcast", new Location(fix));
-                    INJECTING.set(Boolean.TRUE);
+                    if (ok && noteAccess(service, receiver)) {
+                        if (last instanceof Location) ((Location) last).set(deliver);
+                        else XposedHelpers.setObjectField(r, "mLastFixBroadcast", new Location(deliver));
+                        INJECTING.set(Boolean.TRUE);
+                        try {
+                            Object delivered = XposedHelpers.callMethod(receiver, "callLocationChangedLocked", deliver);
+                            if (Boolean.FALSE.equals(delivered)) deadReceivers.add(receiver);
+                            else total++;
+                        } catch (Throwable t) {
+                            if (st.debug()) HookEntry.log("pump deliver failed for " + pkg + ": " + t);
+                        } finally {
+                            INJECTING.set(Boolean.FALSE);
+                        }
+                        try {
+                            XposedHelpers.callMethod(XposedHelpers.getObjectField(r, "mRealRequest"), "decrementNumUpdates");
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    if (expired(r, now)) {
+                        try {
+                            XposedHelpers.callMethod(receiver, "callRemovedLocked");   // 11 only
+                        } catch (Throwable ignored) {
+                        }
+                        dead.add(r);
+                    }
+                }
+                for (Object receiver : deadReceivers) {
                     try {
-                        Object delivered = XposedHelpers.callMethod(receiver, "callLocationChangedLocked", fix);
-                        if (!Boolean.FALSE.equals(delivered)) total++;
-                    } catch (Throwable t) {
-                        if (st.debug()) HookEntry.log("pump deliver failed for " + pkg + ": " + t);
-                    } finally {
-                        INJECTING.set(Boolean.FALSE);
+                        XposedHelpers.callMethod(service, "removeUpdatesLocked", receiver);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                if (!dead.isEmpty()) {
+                    for (Object r : dead) {
+                        try {
+                            XposedHelpers.callMethod(r, "disposeLocked", true);
+                        } catch (Throwable ignored) {
+                        }
                     }
                     try {
-                        XposedHelpers.callMethod(XposedHelpers.getObjectField(r, "mRealRequest"), "decrementNumUpdates");
+                        XposedHelpers.callMethod(service, "applyRequirementsLocked", provider);
                     } catch (Throwable ignored) {
                     }
                 }
             }
         }
         return total;
+    }
+
+    /** UpdateRecord exhausted (numUpdates used up) or past its expiry, like LMS tracks it. */
+    private static boolean expired(Object record, long now) {
+        try {
+            Object request = XposedHelpers.getObjectField(record, "mRealRequest");
+            if ((Integer) XposedHelpers.callMethod(request, "getNumUpdates") <= 0) return true;
+            try {
+                return XposedHelpers.getLongField(record, "mExpirationRealtimeMs") < now;   // 11
+            } catch (Throwable ignored) {
+                return (Long) XposedHelpers.callMethod(request, "getExpireAt") < now;    // 8.1 - 10
+            }
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Receiver only holds ACCESS_COARSE_LOCATION. */
+    private static boolean isCoarseReceiver(Object receiver) {
+        try {
+            return XposedHelpers.getIntField(receiver, "mAllowedResolutionLevel") == 1;        // 8.1 - 10
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object id = XposedHelpers.getObjectField(receiver, "mCallerIdentity");
+            return XposedHelpers.getIntField(id, "permissionLevel") == 1;                     // 11
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** The system's own coarse copy (LocationFudger); the fine fix if the fudger is unavailable. */
+    private static Location coarsen(Object service, String provider, Location fix) {
+        try {
+            Object fudger;
+            try {
+                fudger = XposedHelpers.getObjectField(service, "mLocationFudger");            // 8.1 - 10: one per service
+            } catch (Throwable ignored) {
+                Object manager = XposedHelpers.callMethod(service, "getLocationProviderManager", provider);
+                fudger = XposedHelpers.getObjectField(manager, "mLocationFudger");            // 11: one per provider manager
+            }
+            Object c;
+            try {
+                c = XposedHelpers.callMethod(fudger, "createCoarse", fix);      // 11
+            } catch (Throwable ignored) {
+                c = XposedHelpers.callMethod(fudger, "getOrCreate", fix);       // 8.1 - 10
+            }
+            if (c instanceof Location) return (Location) c;
+        } catch (Throwable ignored) {
+        }
+        return fix;
+    }
+
+    /** Note the location app-op the way LMS does before a delivery; false = the app may not receive now. */
+    private static boolean noteAccess(Object service, Object receiver) {
+        try {
+            Object helper = XposedHelpers.getObjectField(service, "mAppOpsHelper");              // 11
+            Object id = XposedHelpers.getObjectField(receiver, "mCallerIdentity");
+            return (Boolean) XposedHelpers.callMethod(helper, "noteLocationAccess", id);
+        } catch (Throwable ignored) {
+        }
+        try {
+            int pid, uid, level = XposedHelpers.getIntField(receiver, "mAllowedResolutionLevel");
+            String pkg;
+            try {
+                Object id = XposedHelpers.getObjectField(receiver, "mCallerIdentity");         // 10
+                pid = XposedHelpers.getIntField(id, "mPid");
+                uid = XposedHelpers.getIntField(id, "mUid");
+                pkg = (String) XposedHelpers.getObjectField(id, "mPackageName");
+            } catch (Throwable ignored) {
+                pid = XposedHelpers.getIntField(receiver, "mPid");                              // 8.1 / 9
+                uid = XposedHelpers.getIntField(receiver, "mUid");
+                pkg = (String) XposedHelpers.getObjectField(receiver, "mPackageName");
+            }
+            return (Boolean) XposedHelpers.callMethod(service, "reportLocationAccessNoThrow", pid, uid, pkg, level);
+        } catch (Throwable ignored) {
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------ status

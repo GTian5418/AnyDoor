@@ -82,7 +82,7 @@ const S = {
   routeTab: 'plan',    // plan | manual
   routeMode: 'walking',
   routeLoop: 'none',   // none | pingpong | loop
-  plan: { start: null, end: null, planned: null },   // start/end: {lat,lng,name}; planned: {distance,duration,mode}
+  plan: { start: null, end: null, vias: [], planned: null, routes: [], sel: 0 },   // start/end/vias[]: {lat,lng,name}; planned: {distance,duration,mode}; routes: Amap alternatives, sel = chosen index
   favs: [], hist: [], routes: [],
   dpadStep: 5,
   night: false,
@@ -554,13 +554,20 @@ async function renderRoutePage() {
   renderEndpoints(); renderRoutePoints(); renderSavedRoutes(); updateRouteSummary();
   refreshStatus();
 }
+/** Forget the planned polyline and its alternatives (endpoints / vias / mode changed). */
+function clearPlan(keepPoints) {
+  S.plan.planned = null; S.plan.routes = []; S.plan.sel = 0;
+  if (!keepPoints) S.routePts = [];
+  renderRouteAlts();
+}
 function setRouteTab(t) {
   S.routeTab = t;
   $$('#routeTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   $('#routePlan').classList.toggle('hidden', t !== 'plan');
   $('#routeManual').classList.toggle('hidden', t !== 'manual');
-  if (t === 'manual' && S.plan.planned) { S.routePts = []; S.plan.planned = null; drawRoute(); }
+  if (t === 'manual' && S.plan.planned) { clearPlan(false); drawRoute(); }
   if (t === 'plan' && !S.plan.planned && S.routePts.length) { S.routePts = []; drawRoute(); }
+  drawEndpoints();
   updateRouteSummary();
 }
 function applyMode(m, keepSpeed) {
@@ -572,26 +579,45 @@ function applyMode(m, keepSpeed) {
   const sc = $('#speedChips'); sc.innerHTML = '';
   M.chips.forEach(v => { const b = el('button', 'chip', v + ' km/h'); b.onclick = () => { sl.value = v; $('#routeSpeedText').textContent = v + ' km/h'; updateRouteSummary(); }; sc.appendChild(b); });
   if (M.stride) $('#stride').value = M.stride;
-  if (S.plan.planned && S.plan.planned.mode !== m) { S.plan.planned = null; $('#planSummary').textContent = '交通方式已变，请重新规划。'; }
+  if (S.plan.planned && S.plan.planned.mode !== m) { clearPlan(true); $('#planSummary').textContent = '交通方式已变，请重新规划。'; }
   updateRouteSummary();
 }
 function renderEndpoints() {
   const st = S.plan.start, en = S.plan.end;
   $('#epStartText').textContent = st ? (st.name || fmt(st.lat, 5) + ', ' + fmt(st.lng, 5)) : '当前模拟位置' + (S.target ? '（' + (S.name || fmt(S.target.lat, 5) + ', ' + fmt(S.target.lng, 5)) + '）' : '');
   $('#epEndText').textContent = en ? (en.name || fmt(en.lat, 5) + ', ' + fmt(en.lng, 5)) : '未设置终点';
+  renderVias();
   drawEndpoints();
 }
+/** 途经点 rows between start and end; removing one invalidates the plan. */
+function renderVias() {
+  const box = $('#viaList'); if (!box) return;
+  box.innerHTML = '';
+  (S.plan.vias || []).forEach((v, i) => {
+    const row = el('div', 'ep');
+    row.innerHTML = '<span class="ep-dot via"></span><span class="ep-text"></span><button class="mini">移除</button>';
+    row.querySelector('.ep-text').textContent = '途经 ' + (i + 1) + '：' + (v.name || fmt(v.lat, 5) + ', ' + fmt(v.lng, 5));
+    row.querySelector('button').onclick = () => { S.plan.vias.splice(i, 1); clearPlan(false); drawRoute(); renderEndpoints(); updateRouteSummary(); };
+    box.appendChild(row);
+  });
+}
+/** Menu for picking a place: start, end, or a new via point. */
 function endpointMenu(which) {
-  const set = (lat, lng, name) => { S.plan[which] = { lat, lng, name }; S.plan.planned = null; S.routePts = []; drawRoute(); renderEndpoints(); updateRouteSummary(); };
+  const isVia = which === 'via';
+  const set = (lat, lng, name) => {
+    if (isVia) S.plan.vias.push({ lat, lng, name }); else S.plan[which] = { lat, lng, name };
+    clearPlan(false); drawRoute(); renderEndpoints(); updateRouteSummary();
+  };
+  const label = which === 'start' ? '起点' : which === 'end' ? '终点' : '途经点';
   const acts = [];
-  if (which === 'start') acts.push({ t: '当前模拟位置（默认）', fn: () => { S.plan.start = null; S.plan.planned = null; renderEndpoints(); } });
+  if (which === 'start') acts.push({ t: '当前模拟位置（默认）', fn: () => { S.plan.start = null; clearPlan(false); drawRoute(); renderEndpoints(); updateRouteSummary(); } });
   else if (S.target) acts.push({ t: '当前模拟目标', fn: () => set(S.target.lat, S.target.lng, S.name) });
-  acts.push({ t: '在地图上点选', fn: () => { closePage(); toast('点击地图选择' + (which === 'start' ? '起点' : '终点')); mapPick = (lat, lng) => { set(lat, lng, (which === 'start' ? '起点' : '终点') + ' · 地图选点'); openPage('route'); }; } });
-  acts.push({ t: '搜索地点', fn: () => placePicker(which === 'start' ? '搜索起点' : '搜索终点', (it) => set(it.lat, it.lng, it.name)) });
+  acts.push({ t: '在地图上点选', fn: () => { closePage(); toast('点击地图选择' + label); mapPick = (lat, lng) => { set(lat, lng, label + ' · 地图选点'); openPage('route'); }; } });
+  acts.push({ t: '搜索地点', fn: () => placePicker('搜索' + label, (it) => set(it.lat, it.lng, it.name)) });
   if (S.favs.length) acts.push({ t: '从收藏选择', fn: () => listPicker('收藏夹', S.favs, (f) => set(f.lat, f.lng, f.name)) });
   if (S.hist.length) acts.push({ t: '从历史选择', fn: () => listPicker('历史记录', S.hist, (h) => set(h.lat, h.lng, h.name)) });
   if (which === 'start') acts.push({ t: '真实位置', fn: async () => { const r = await requestRealLocation(); if (r && r.ok) set(r.lat, r.lng, '真实位置'); else toast(r && r.error || '定位失败'); } });
-  sheetMenu(which === 'start' ? '起点' : '终点', acts);
+  sheetMenu(label, acts);
 }
 function listPicker(title, items, onPick) {
   const m = openModal('<h3>' + esc(title) + '</h3><div class="picker-list" id="pl"></div><div class="actions"><button id="mc">取消</button></div>');
@@ -630,7 +656,8 @@ async function planRoute() {
   const key = await getApp('amap_key', '');
   if (!key || !key.trim()) { promptAmapKey(null, '路径规划需要高德 Key'); return; }
   $('#planSummary').textContent = '正在规划…';
-  const r = await call('planRoute', JSON.stringify({ mode: S.routeMode, points: [start, S.plan.end] }));
+  const points = [start].concat(S.plan.vias || [], [S.plan.end]);
+  const r = await call('planRoute', JSON.stringify({ mode: S.routeMode, points }));
   if (!r || !r.ok) {
     let msg = (r && r.error) || '规划失败';
     if (/NO_KEY/.test(msg)) msg = '需要高德 Key';
@@ -638,10 +665,40 @@ async function planRoute() {
     else if (/USERKEY|INVALID/i.test(msg)) msg = '高德 Key 无效（需「Web服务」类型）';
     $('#planSummary').textContent = '规划失败：' + msg; toast('规划失败'); return;
   }
+  // older bridge builds return a single route; newer ones every Amap alternative
+  S.plan.routes = (r.routes && r.routes.length) ? r.routes : [{ points: r.points, distance: r.distance, duration: r.duration, label: '高德推荐' }];
+  selectRoute(0); fitRoute(); vib();
+  if (S.plan.routes.length > 1) toast('高德给出 ' + S.plan.routes.length + ' 条路线，可点选备选');
+}
+/** Make alternative i the active route (polyline that will be simulated). */
+function selectRoute(i) {
+  const routes = S.plan.routes || [];
+  if (!routes.length) return;
+  i = Math.max(0, Math.min(i, routes.length - 1));
+  const r = routes[i];
+  S.plan.sel = i;
   S.routePts = r.points; S.plan.planned = { distance: r.distance, duration: r.duration, mode: S.routeMode };
-  drawRoute(); fitRoute(); updateRouteSummary(); vib();
+  drawRoute(); renderRouteAlts(); updateRouteSummary();
   const crossings = r.points.filter(p => p.s).length;
-  $('#planSummary').textContent = MODES[S.routeMode].name + '路线 · 全程 ' + fmtDist(r.distance) + ' · ' + r.points.length + ' 个路径点 · ' + crossings + ' 处路口 · 高德预计 ' + fmtDur(r.duration);
+  $('#planSummary').textContent = MODES[S.routeMode].name + '路线' + (routes.length > 1 ? '（' + (r.label || '路线 ' + (i + 1)) + '）' : '') + ' · 全程 ' + fmtDist(r.distance) + ' · ' + r.points.length + ' 个路径点 · ' + crossings + ' 处路口 · 高德预计 ' + fmtDur(r.duration);
+}
+/** The list of alternatives under the plan button; hidden unless Amap returned more than one. */
+function renderRouteAlts() {
+  const box = $('#routeAlts'), hint = $('#routeAltsHint');
+  if (!box) return;
+  const routes = S.plan.routes || [];
+  const show = routes.length > 1;
+  box.classList.toggle('hidden', !show); if (hint) hint.classList.toggle('hidden', !show);
+  box.innerHTML = '';
+  if (!show) return;
+  routes.forEach((r, i) => {
+    const it = el('div', 'item' + (i === S.plan.sel ? ' on' : ''));
+    it.innerHTML = '<span class="ii">' + (i + 1) + '</span><span class="it"><div class="in"></div><div class="ia"></div></span>';
+    it.querySelector('.in').textContent = (r.label || '路线 ' + (i + 1)) + ' · ' + fmtDist(r.distance) + ' · 高德预计 ' + fmtDur(r.duration);
+    it.querySelector('.ia').textContent = r.points.length + ' 个路径点 · ' + r.points.filter(p => p.s).length + ' 处路口';
+    it.onclick = () => { selectRoute(i); vib(8); };
+    box.appendChild(it);
+  });
 }
 function fitRoute() { if (S.routePts.length > 1) map.fitBounds(L.latLngBounds(S.routePts.map(p => toMap(p.lat, p.lng))), { padding: [40, 40], maxZoom: 17 }); }
 let epMarkers = [];
@@ -651,17 +708,28 @@ function drawEndpoints() {
   const st = S.plan.start, en = S.plan.end;
   const mk = (pt, cls, txt) => { const m = L.marker(toMap(pt.lat, pt.lng), { icon: L.divIcon({ className: '', html: '<div class="wp ' + cls + '">' + txt + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }), interactive: false }).addTo(map); epMarkers.push(m); };
   if (st) mk(st, 'start', '起');
+  (S.plan.vias || []).forEach((v, i) => mk(v, 'via', String(i + 1)));
   if (en) mk(en, 'end', '终');
 }
 function enterRouteAddMode() { routeAddMode = true; $('#routeEdit').classList.add('on'); $('#routeEdit').textContent = '点击地图添加（完成）'; closePage(); toast('点击地图添加路径点，完成后回到本页'); collapseSheet(true); }
 function exitRouteAddMode() { routeAddMode = false; const b = $('#routeEdit'); if (b) { b.classList.remove('on'); b.textContent = '在地图上添加路径点'; } clearRouteMarkers(); }
 function addRoutePoint(lat, lng) { S.routePts.push({ lat, lng }); drawRoute(); toast('已添加第 ' + S.routePts.length + ' 个点'); vib(); }
+let altLines = [];   // grey polylines of the alternatives that are not selected (tap to select)
 function drawRoute() {
   clearRouteMarkers();
   if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  altLines.forEach(l => map.removeLayer(l)); altLines = [];
   if (!S.routePts.length) return;
-  const pts = S.routePts.map(p => toMap(p.lat, p.lng));
   const planned = !!S.plan.planned;
+  if (planned && S.plan.routes && S.plan.routes.length > 1) {
+    S.plan.routes.forEach((r, i) => {
+      if (i === S.plan.sel) return;
+      const l = L.polyline(r.points.map(p => toMap(p.lat, p.lng)), { color: '#9CA3AF', weight: 6, opacity: .6 }).addTo(map);
+      l.on('click', (e) => { L.DomEvent.stop(e); selectRoute(i); vib(8); });
+      altLines.push(l);
+    });
+  }
+  const pts = S.routePts.map(p => toMap(p.lat, p.lng));
   routeLine = L.polyline(pts, { color: '#3B82F6', weight: planned ? 5 : 4, opacity: .85, dashArray: planned ? null : '2 8' }).addTo(map);
   if (!planned) pts.forEach((p, i) => { const m = L.marker(p, { icon: L.divIcon({ className: '', html: '<div class="wp">' + (i + 1) + '</div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(map); routeMarkers.push(m); });
 }
@@ -724,6 +792,7 @@ function renderSavedRoutes() {
     it.innerHTML = '<span class="ii">' + (r.planned ? '⇢' : '⤳') + '</span><span class="it"><div class="in">' + esc(r.name) + '</div><div class="ia">' + tag + r.points.length + ' 个点 · ' + r.speed + ' km/h' + (r.loop && r.loop !== 'none' && r.loop !== false ? ' · ' + (r.loop === 'pingpong' ? '往返' : '循环') : '') + '</div></span><button class="more">⋯</button>';
     it.querySelector('.it').onclick = () => {
       S.routePts = r.points.slice(); S.routeLoop = typeof r.loop === 'boolean' ? (r.loop ? 'loop' : 'none') : (r.loop || 'none');
+      S.plan.routes = []; S.plan.sel = 0; S.plan.vias = (r.vias || []).slice(); renderRouteAlts();
       if (r.planned) { S.plan.start = r.start || null; S.plan.end = r.end || null; S.plan.planned = { distance: routeDistance(), duration: 0, mode: r.mode }; S.routeTab = 'plan'; }
       else { S.plan.planned = null; S.routeTab = 'manual'; }
       setRouteTab(S.routeTab); applyMode(r.mode || 'walking', true); $('#routeSpeed').value = r.speed; $('#routeSpeedText').textContent = r.speed + ' km/h';
@@ -740,7 +809,7 @@ function saveRoute() {
   const def = S.plan.planned && S.plan.end ? ((S.plan.start ? S.plan.start.name : (S.name || '当前位置')) + ' → ' + S.plan.end.name) : '路线 ' + (S.routes.length + 1);
   modalInput('保存路线', def, (name) => {
     S.routes.unshift({ name: name || '未命名路线', points: S.routePts.slice(), speed: parseFloat($('#routeSpeed').value) || 5, loop: S.routeLoop,
-      mode: S.routeMode, planned: !!S.plan.planned, start: S.plan.start, end: S.plan.end });
+      mode: S.routeMode, planned: !!S.plan.planned, start: S.plan.start, end: S.plan.end, vias: (S.plan.vias || []).slice() });
     setJSON('routes', S.routes); renderSavedRoutes(); toast('已保存');
   });
 }
@@ -823,15 +892,23 @@ async function renderEnv() {
   const svc = e.service || {};
   if (e.started) {
     if (svc.running && svc.pumpActive) {
-      // no test provider: the framework hook hands fixes straight to app registrations
+      // no test provider for some/all providers: the framework hook hands fixes straight to app registrations
       const ok = /^(12\+|legacy)$/.test(e.sysPump || svc.pumpStatus || '');
       const n = e.injected || svc.pumpInjected || 0;
+      const partial = svc.pumpProviders && !/gps/.test(svc.pumpProviders) ? 'GPS 测试定位源就绪；网络定位改由系统直推' : '系统直推模式（未注册测试定位源）';
       rows.push(['定位服务', ok ? (n > 0 ? 'ok' : 'warn') : 'bad',
-        ok ? ('系统直推模式（未注册测试定位源）：已向应用直推 ' + n + ' 次' + (n > 0 ? '；最近 ' + new Date(e.lastInject || svc.pumpLast).toLocaleTimeString() : '，等待目标应用请求定位'))
+        ok ? (partial + '：已向应用直推 ' + n + ' 次' + (n > 0 ? '；最近 ' + new Date(e.lastInject || svc.pumpLast).toLocaleTimeString() : '，等待目标应用请求定位'))
            : '系统直推不可用（系统模块 ' + (e.sysPump || '未响应') + '），请升级模块并重启手机']);
     } else {
       rows.push(['定位服务', svc.running ? 'ok' : 'bad', svc.running ? `GPS ${svc.gpsReady ? '就绪' : '未就绪'} / 网络 ${svc.networkReady ? '就绪' : '未就绪'}` : '服务未运行，请重新开始模拟']);
     }
+  }
+  if (e.sysProtocol === e.protocol && e.sysVersion === e.version && e.sysWifi !== undefined) {
+    // network-positioning inputs: WiFi scan / connected BSSID (system + connectivity) and cell identity (phone + registry)
+    const wifiOk = e.sysWifi === 'ok', connOk = e.sysConn === 'ok' || (e.sysSdk && e.sysSdk < 30), cellOk = e.sysCellGate > 0 || (e.sysSdk && e.sysSdk < 29);
+    const parts = ['WiFi 扫描 ' + (wifiOk ? '✓' : e.sysWifi || '?'), '已连接 WiFi ' + (connOk ? '✓' : e.sysConn || '?'), '基站 ' + (cellOk ? '✓' : '未挂钩')];
+    rows.push(['WiFi / 基站屏蔽', wifiOk && connOk && cellOk ? 'ok' : 'warn',
+      parts.join(' · ') + (wifiOk && connOk && cellOk ? '（需勾选「电话」作用域才对基站生效）' : '；未就绪项请升级模块后完整重启，并确认作用域包含系统框架与电话')]);
   }
   // System framework can grant OP_MOCK_LOCATION for us even when the ROM keeps the stored appop
   // errored (ColorOS/OxygenOS), so treat either signal as granted.
@@ -959,6 +1036,7 @@ function bind() {
   $$('#loopSeg button').forEach(b => b.onclick = () => { $$('#loopSeg button').forEach(x => x.classList.remove('on')); b.classList.add('on'); S.routeLoop = b.dataset.loop; updateRouteSummary(); });
   $('#epStartBtn').onclick = () => endpointMenu('start');
   $('#epEndBtn').onclick = () => endpointMenu('end');
+  $('#viaAddBtn').onclick = () => { if ((S.plan.vias || []).length >= 8) { toast('最多 8 个途经点'); return; } endpointMenu('via'); };
   $('#routePlanBtn').onclick = planRoute;
   $('#stepFake').onchange = (e) => saveConfig({ step_fake: e.target.checked });
   $('#stride').onchange = () => { const v = parseFloat($('#stride').value); if (v > 0) saveConfig({ stride: v }); updateRouteSummary(); };

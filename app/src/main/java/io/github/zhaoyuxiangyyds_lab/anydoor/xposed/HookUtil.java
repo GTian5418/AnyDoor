@@ -115,14 +115,86 @@ final class HookUtil {
         return uid < 10000;
     }
 
-    /** Packages that must always see real WiFi/cell data (system UI). Location spoof still applies to them. */
+    /**
+     * Packages that must always see real WiFi/cell data: the settings / status-bar UI (including the
+     * OEM WiFi settings apps that replace it on ColorOS/OxygenOS), otherwise the WiFi list is empty
+     * and the user cannot join a network while spoofing. Location spoof still applies to them.
+     */
     static boolean isInfraPackage(String pkg) {
         if (pkg == null) return false;
         return pkg.equals(Keys.PKG) || pkg.startsWith("com.android.settings") || pkg.startsWith("com.android.systemui")
-                || pkg.equals("com.android.phone") || pkg.equals("com.android.shell");
+                || pkg.equals("com.android.phone") || pkg.equals("com.android.shell")
+                || pkg.endsWith(".wirelesssettings") || pkg.equals("com.android.wifi.resources")
+                || pkg.equals("com.android.captiveportallogin");
     }
 
     static int callingUid() {
         return Binder.getCallingUid();
+    }
+
+    static final String MASKED_BSSID = "02:00:00:00:00:00";
+
+    /**
+     * Android 12+ hands the connected network's {@code WifiInfo} to apps inside
+     * {@code NetworkCapabilities.getTransportInfo()} (ConnectivityManager.getNetworkCapabilities and
+     * NetworkCallback.onCapabilitiesChanged), which carries the same BSSID that getConnectionInfo
+     * does. Returns a copy with the BSSID masked, or null when there is nothing to mask.
+     */
+    static Object maskWifiTransport(Object nc, boolean hideSsid) {
+        if (nc == null) return null;
+        try {
+            Object ti = XposedHelpers.callMethod(nc, "getTransportInfo");
+            if (!(ti instanceof android.net.wifi.WifiInfo)) return null;
+            android.net.wifi.WifiInfo w = (android.net.wifi.WifiInfo) ti;
+            String bssid = w.getBSSID();
+            if (bssid == null || MASKED_BSSID.equals(bssid)) return null;
+            Object copy = XposedHelpers.newInstance(w.getClass(), w);
+            XposedHelpers.callMethod(copy, "setBSSID", MASKED_BSSID);
+            try {
+                XposedHelpers.callMethod(copy, "setMacAddress", MASKED_BSSID);
+            } catch (Throwable ignored) {
+            }
+            if (hideSsid) SystemHooks.hideSsid(copy);
+            Object out = XposedHelpers.newInstance(nc.getClass(), nc);
+            XposedHelpers.callMethod(out, "setTransportInfo", copy);
+            return out;
+        } catch (Throwable t) {
+            HookEntry.log("mask WifiInfo in NetworkCapabilities failed: " + t);
+            return null;
+        }
+    }
+
+    /** ServiceState without cell identity (Android 10+); the original when the copy is unavailable. */
+    static Object sanitizeServiceState(Object state) {
+        if (state == null) return null;
+        try {
+            Object copy = XposedHelpers.callMethod(state, "createLocationInfoSanitizedCopy", true);
+            return copy == null ? state : copy;
+        } catch (Throwable t) {
+            return state;
+        }
+    }
+
+    /** Hand an empty cell list to a TelephonyManager.CellInfoCallback / ICellInfoCallback. */
+    static void deliverEmptyCells(Object callback, java.util.concurrent.Executor executor) {
+        if (callback == null) return;
+        Runnable r = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    XposedHelpers.callMethod(callback, "onCellInfo", new java.util.ArrayList<>());
+                } catch (Throwable t) {
+                    HookEntry.log("empty cell callback failed: " + t);
+                }
+            }
+        };
+        if (executor != null) {
+            try {
+                executor.execute(r);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+        r.run();
     }
 }

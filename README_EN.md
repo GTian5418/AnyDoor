@@ -11,9 +11,9 @@
 
 <p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
 
-**1.3.6 exempt-app mode no longer starves other apps: new "direct delivery"**: [APK and upgrade notes](../../releases/tag/v1.3.6) · [Changelog](CHANGELOG.md). Fixes the case where, once an exempt app was configured (or the test provider was disabled, or a ROM refused to register a test provider), other apps could only locate occasionally and got no indoor updates. When no test provider is running, the framework hook now delivers the spoofed fix straight to each app's location registration (exempt apps are skipped and keep their real location). The per-version paths are verified against AOSP source; **not retested on hardware**. Fully reboot once after upgrading.
+**1.4 WiFi / cell blocking now covers the newer APIs; route alternatives and via points**: [APK and upgrade notes](../../releases/tag/v1.4) · [Changelog](CHANGELOG.md). `requestCellInfoUpdate` (Android 10+), the cell identity inside `ServiceState`, and the connected WiFi BSSID that Android 12+ hands out through `NetworkCapabilities` were not blocked before, so an app's own network-positioning SDK could still see the real surroundings — the main reason a few apps / WeChat mini-programs kept showing the original position although the system location was already rewritten. Route planning now lists AMap's alternative routes and accepts via points, and the route polyline is finally visible on the map. **Not retested on hardware**; fully reboot once after upgrading.
 
-<sub>Earlier: 1.3.5 fixed `OP_MOCK_LOCATION` being denied on ColorOS/OxygenOS (test providers failing to register); 1.3.4 fixed repeated real-location stalls and the Android 15/16 WiFi-block leak. See the [Changelog](CHANGELOG.md).</sub>
+<sub>Earlier: 1.3.6 added "direct delivery" so exempt-app mode no longer starves other apps; 1.3.5 fixed `OP_MOCK_LOCATION` being denied on ColorOS/OxygenOS (test providers failing to register); 1.3.4 fixed repeated real-location stalls and the Android 15/16 WiFi-block leak. See the [Changelog](CHANGELOG.md).</sub>
 
 
 > An Xposed module that rewrites **system-provided locations** by rewriting locations inside `system_server` — no mock-provider flag, no per-app hooking, works indoors without a GPS fix.
@@ -36,7 +36,7 @@ AnyDoor (任意门, "Anywhere Door") was written to replace the old-school fake-
 - **A real map UI** (WebView + Leaflet + AMap tiles):
   - Place search, tap-to-pick, paste coordinates
   - **D-pad nudging** and a **floating joystick** overlay to walk around on top of any app
-  - **Route simulation** — pick start & destination, choose **walk / run / bike / drive**, and follow real roads (AMap directions); random speed variation, random stops at crossings, return trip or loop; manual waypoints still available
+  - **Route simulation** — pick start & destination, choose **walk / run / bike / drive**, and follow real roads (AMap directions); pick one of AMap's **alternative routes** or add **via points** to force another road; random speed variation, random stops at crossings, return trip or loop; manual waypoints still available
   - **Pedometer sync** — fake step-counter sensor events while walking (WeChat Sport, Keep, …), configurable stride, plus a "add N steps" mode
   - Favorites, history, random jitter, light/dark theme
 - **One-tap privacy hardening** — blank Wi-Fi / cell / GNSS / Bluetooth environment + spoofed IMEI / IMSI / ICCID / Android ID / serial + barometer blocked; independent of location spoofing. The [limits](#-what-privacy-mode-cannot-do) are documented honestly.

@@ -1,5 +1,37 @@
 # 更新记录
 
+## 1.4 — 2026-09-20（补齐 WiFi / 基站屏蔽的新接口覆盖；路线规划可选备选路线与途经点；修复地图上路线不显示）
+
+### 修复：部分应用 / 微信小程序仍取到原本位置
+
+系统定位（`getLastLocation` 与逐注册下发）此前已全局改写，但应用自带的网络定位 SDK 还会另外读取 WiFi 与基站信息，本模块的 `wifi_block` / `cell_block` 只覆盖了旧接口，Android 10/12 之后新增的接口仍能把真实环境交给这些 SDK：
+
+- **基站**：`TelephonyManager.requestCellInfoUpdate`（Android 10+ 的 `getAllCellInfo` 替代接口，腾讯定位 SDK 7.6 起每 30 秒调用一次）之前完全没有拦截。现在电话进程（`PhoneInterfaceManager.requestCellInfoUpdate[WithWorkSource]`）与强化模式的客户端 hook 都改为以空列表回调，调用方流程正常结束。
+- **基站**：`getServiceState()` 返回的 `ServiceState` 自 Android 10 起携带驻留小区标识，改为返回系统自身给无定位权限应用使用的脱敏副本；`TelephonyRegistry` 的 `checkFineLocationAccess / checkCoarseLocationAccess` 对被屏蔽的注册返回否，于是注册表自身跳过小区事件、并投递脱敏的服务状态。
+- **已连接 WiFi**：Android 12+ 的 `ConnectivityManager.getNetworkCapabilities()` 与 `NetworkCallback.onCapabilitiesChanged()` 通过 `NetworkCapabilities.getTransportInfo()` 携带与 `getConnectionInfo()` 相同的 BSSID。现在在 `ConnectivityService` 的定位脱敏拷贝处（`createWithLocationInfoSanitizedIfNecessaryWhenParceled`，Android 11 为 `maybeSanitizeLocationInfoForCaller`）把 BSSID 替换为 `02:00:00:00:00:00`；`com.android.tethering` APEX 的类加载器与 WiFi 服务一样在 `SystemServiceManager.startService` 时捕获。强化模式下客户端的 `getNetworkCapabilities` 与回调消息同样处理。
+- **GNSS**：系统侧补上 `addNmeaListener` / `registerGnssNmeaCallback`（NMEA 语句含原始经纬度），与既有的测量 / 导航电文拦截一致；豁免应用不受影响。
+- 系统 UI 例外新增 ColorOS/OxygenOS 的 `*.wirelesssettings` 等设置类包名，避免模拟期间 WiFi 设置页列表为空。
+- 环境检查新增「WiFi / 基站屏蔽」一项，分别显示 WiFi 扫描、已连接 WiFi（connectivity）与基站（registry）三处 hook 状态；系统 Hook 摘要新增 `conn=`、`cellgate=`。
+
+微信 8.0.78 的定位组件（`com.tencent.map.geolocation.sapp`）是运行时动态加载的加密组件，本版没有对其反编译；上述接口覆盖依据公开版腾讯定位 SDK 7.6.1.12 的实现核对。仍无法覆盖的只有公网 IP 归属地（服务端按 IP 判断，只能到省市级）。
+
+### 修复：系统直推按定位源补位
+
+- 只有 `gps` 或 `network` 之一没有测试定位源时（例如关闭了网络模拟、或单个源注册失败），驱动现在只对缺失的源（及依赖它们的 fused / passive）请求直推，不再要求两者都缺失才启用；探针名形如 `anydoor.pump:network`。
+- Android 8.1–11 的直推现在与 `handleLocationChangedLocked` 一致：投递前记录定位 app-op、仅有粗略权限的接收者拿到系统 `LocationFudger` 的粗略副本、`numUpdates` 用尽或过期的注册按系统方式移除（`requestSingleUpdate` 只收到一次），死亡接收者被清理。
+
+### 新增：路线规划的备选路线与途经点
+
+- 步行 / 跑步 / 骑行改用高德路径规划 2.0（`alternative_route=3`），驾车沿用 v3 `strategy=10` 的多结果；失败时回退到原来的 v3 / v4 单结果接口。规划后列出「高德推荐 / 备选 2 / 备选 3」（各自里程、预计时长、路径点与路口数），点列表或地图上的灰色线即可切换，再开始模拟。
+- 「起点 → 终点」页可添加**途经点**（地图点选 / 搜索 / 收藏 / 历史，最多 8 个），路线必须经过它们；多段路线时第 k 条备选取每段的第 k 条结果。途经点随路线一起保存。
+- 修复：`app.css` 的全局 `svg { width: 22px }` 也作用于 Leaflet 的覆盖层 `<svg>`，导致规划 / 手动路径的折线在地图上只剩 22 像素、几乎看不见。
+
+### 验证与升级
+
+- 主机回归新增 `RouteTest`（27 项：v5 备选解析、v3/v4 回退、多段组合、去重与上限），全部通过；Web 界面在浏览器预览中验证了备选切换、途经点与折线显示。
+- Xposed 侧改动依据 AOSP 源码（10/11/12–16 的 `TelephonyRegistry`、`ConnectivityService`、`PhoneInterfaceManager`）与公开 SDK 反编译核对，**未在真机复测**。
+- 覆盖安装后请**完整重启一次手机**；作用域仍需勾选「系统框架」「电话」「蓝牙」，基站相关拦截依赖「电话」作用域。
+
 ## 1.3.6 — 2026-09-19（豁免应用模式下其他应用不再断供：新增「系统直推」下发）
 
 ### 修复：设置了豁免应用后，其他应用只能偶尔定位成功

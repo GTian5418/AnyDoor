@@ -34,7 +34,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   font-size: 15px; -webkit-user-select: none; user-select: none; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 input, textarea, select { font: inherit; color: inherit; }
-svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+/* icon defaults; Leaflet's own overlay <svg> (route polylines) keeps its width/height attributes */
+svg:not(.leaflet-zoom-animated) { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
@@ -249,6 +250,15 @@ input[type="range"] { width: 100%; margin: 6px 0; accent-color: var(--accent); }
 .ep-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wp.start { border-color: #22c55e; color: #22c55e; }
 .wp.end { border-color: #ef4444; color: #ef4444; }
+.ep-dot.via { background: #f59e0b; }
+.wp.via { border-color: #f59e0b; color: #f59e0b; }
+.ep.via-add { border-top: 1px solid var(--line); }
+#routeAlts { margin-top: 10px; }
+#routeAlts .item { cursor: pointer; border: 2px solid transparent; }
+#routeAlts .item.on { border-color: var(--accent); }
+#routeAlts .item .ii { width: 30px; height: 30px; border-radius: 9px; font-size: 12px; }
+#routeAlts .item.on .ii { background: var(--accent); color: #fff; }
+#routeAltsHint { margin-top: 6px; }
 .id-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; font-size: 13px; }
 .id-row + .id-row { border-top: 1px solid var(--line); }
 .id-row code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--muted); }

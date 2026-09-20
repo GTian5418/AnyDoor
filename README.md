@@ -11,9 +11,9 @@
 
 <p align="center"><b>简体中文</b> · <a href="README_EN.md">English</a></p>
 
-**1.3.6 豁免应用模式下其他应用不再断供：新增「系统直推」**：[下载 APK 与升级说明](../../releases/tag/v1.3.6) · [完整更新记录](CHANGELOG.md)。修复设置豁免应用（或关闭测试定位源、或 ROM 拒绝注册测试源）后，其他应用只能偶尔定位成功、室内长时间没有下发的问题。现在没有测试定位源时，系统框架会直接把模拟坐标投递给各应用的定位注册（豁免应用被跳过、照常收到真实定位）。各 Android 版本路径经 AOSP 源码核对，**未在真机复测**；升级后请完整重启一次手机。
+**1.4 补齐 WiFi / 基站屏蔽对新接口的覆盖，路线可选备选路线与途经点**：[下载 APK 与升级说明](../../releases/tag/v1.4) · [完整更新记录](CHANGELOG.md)。`requestCellInfoUpdate`（Android 10+）、`ServiceState` 里的小区标识、Android 12+ 经 `NetworkCapabilities` 下发的已连接 WiFi BSSID 之前都没有被屏蔽，应用自带的网络定位 SDK 仍能拿到真实环境——这是“系统定位已改、个别应用 / 小程序仍是原位置”的主要来源，本版补齐。路线规划现在列出高德的多条备选路线并支持途经点，并修复地图上路线折线几乎不可见的问题。**未在真机复测**；升级后请完整重启一次手机。
 
-<sub>更早：1.3.5 修复 ColorOS/OxygenOS 等 ROM 上 `OP_MOCK_LOCATION` 被拒导致测试定位源注册失败；1.3.4 修复真实定位连续使用卡住与 Android 15/16 WiFi 屏蔽失效。见 [更新记录](CHANGELOG.md)。</sub>
+<sub>更早：1.3.6 新增「系统直推」修复豁免应用模式下其他应用断供；1.3.5 修复 ColorOS/OxygenOS 等 ROM 上 `OP_MOCK_LOCATION` 被拒导致测试定位源注册失败；1.3.4 修复真实定位连续使用卡住与 Android 15/16 WiFi 屏蔽失效。见 [更新记录](CHANGELOG.md)。</sub>
 
 
 > 一个基于 Xposed 的安卓**全局虚拟定位**工具，界面美观、功能齐全，专为**中国网络环境**优化。
@@ -37,7 +37,7 @@
 - **好用的地图界面**（WebView + Leaflet + 高德瓦片）：
   - 地点搜索（高德，中国可用）、点图选点、粘贴经纬度
   - **方向键微调** & **悬浮摇杆**（可在任意 App 上层实时走动）
-  - **路线模拟**：设起点终点，按 **步行 / 跑步 / 骑行 / 驾车** 沿真实道路自动移动（高德路径规划）；速度随机波动、路口随机停顿、到达后原路返回或循环；也可手动画路径点
+  - **路线模拟**：设起点终点，按 **步行 / 跑步 / 骑行 / 驾车** 沿真实道路自动移动（高德路径规划）；可在高德给出的多条**备选路线**里点选，也可加**途经点**让路线改走别的路；速度随机波动、路口随机停顿、到达后原路返回或循环；也可手动画路径点
   - **计步同步**：模拟行走时同步伪造计步传感器（微信运动、Keep 等），可设步幅、直接"刷步数"
   - 收藏夹、历史记录、随机漂移、深浅色主题
 - **一键隐私加固**：屏蔽 WiFi / 基站 / GNSS / 蓝牙环境 + 伪造 IMEI / IMSI / ICCID / Android ID / 序列号 + 屏蔽气压计；不依赖是否在模拟位置。说明里明确写了[做不到的部分](#-隐私加固的边界)。
@@ -102,7 +102,7 @@
 3. **微调 / 移动**：
    - 右侧 **方向键**（十字图标）：按固定步长微调
    - 右侧 **摇杆**（圆点图标）：弹出悬浮摇杆，可在其它 App 上层实时走动
-   - 抽屉 → **路线模拟**：选终点（搜索 / 地图点选 / 收藏），选步行、跑步、骑行或驾车，点「规划路线」即沿真实道路生成路径；再调速度、波动、路口停顿和往返/循环，开始模拟
+   - 抽屉 → **路线模拟**：选终点（搜索 / 地图点选 / 收藏），选步行、跑步、骑行或驾车，点「规划路线」即沿真实道路生成路径；高德返回多条时会列出备选路线（点列表或地图上的灰色线切换），需要走特定道路可先添加途经点；再调速度、波动、路口停顿和往返/循环，开始模拟
 4. **停止**：再次点按钮，或下拉通知栏点「停止」。
 5. **计步**（可选）：路线模拟页打开「伪造计步传感器」，把微信等目标 App 加入模块作用域并重启该 App，步数会随模拟行走增长；「刷步数」可在不移动的情况下按设定速率加步。
 6. **隐私加固**（可选）：抽屉 → **隐私加固**，打开总开关即可；页面里能看到当前虚拟身份，可一键重新生成。
@@ -186,8 +186,8 @@ bash build.sh
 
 | 层 | 说明 |
 |----|------|
-| **系统层**（`SystemHooks`） | Hook 最后位置与逐接收者下发：Android ≤ 11 使用 Receiver，Android 12+ 使用各 Registration 的 `acceptLocationChange`。不再在 `onReportLocation` 提前替换系统缓存；保留原始 mock 缓存标记供系统停止测试源时清理。 |
-| **电话层**（`PhoneHooks`） | hook `PhoneInterfaceManager`，对普通 App 隐藏基站信息。 |
+| **系统层**（`SystemHooks`） | Hook 最后位置与逐接收者下发：Android ≤ 11 使用 Receiver，Android 12+ 使用各 Registration 的 `acceptLocationChange`。不再在 `onReportLocation` 提前替换系统缓存；保留原始 mock 缓存标记供系统停止测试源时清理。WiFi 扫描结果、`getConnectionInfo` 与 `NetworkCapabilities` 里的已连接 WiFi BSSID、原始 GNSS 数据（测量 / 导航电文 / NMEA）对普通 App 屏蔽。 |
+| **电话层**（`PhoneHooks`） | hook `PhoneInterfaceManager`，对普通 App 隐藏基站信息：`getAllCellInfo` / `getCellLocation` / `requestCellInfoUpdate` 与 `ServiceState` 中的小区标识；系统层的 `TelephonyRegistry` 同步跳过小区事件。 |
 | **应用层**（`AppHooks`） | 对加入作用域的 App 额外 hook `Location` getter（仅 gps/network/fused/passive 来源）、`isFromMockProvider`、`getLastKnownLocation` 等，二次兜底。不 hook `hasAltitude()` 之类决定 Parcel 布局的方法。 |
 | **驱动**（`SpoofService`） | 前台服务，默认用 `addTestProvider` + `setTestProviderLocation` 持续推送坐标，实现路线移动、摇杆、随机漂移；室内无信号也有定位。设置了豁免应用、关闭测试源或 ROM 拒绝注册测试源时，改由系统层「系统直推」逐注册下发（豁免应用不受影响，保留真实定位）。 |
 | **配置** | 私有 SharedPreferences + 标准 XSharedPreferences API；Root 原子快照供系统读取，受定位权限约束的系统状态桥供作用域内进程读取。带协议、递增版本和 15 秒运行心跳有效期，不再声明 `xposedsharedprefs`。 |

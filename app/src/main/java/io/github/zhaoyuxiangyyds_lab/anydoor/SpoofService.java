@@ -303,18 +303,31 @@ public class SpoofService extends Service {
         if (!running || !permissionsReady) return;
         providers.push(System.currentTimeMillis());
         lastPush = providers.lastPush();
-        if (!providers.hasProviders()) kickPump();
+        String missing = missingProviders();
+        if (missing != null) kickPump(missing);
         publishProviderStatus();
     }
 
+    /** Providers (gps/network) without a running test provider, comma separated; null when all run. */
+    private String missingProviders() {
+        StringBuilder b = new StringBuilder();
+        for (String p : new String[]{"gps", "network"}) {
+            if (providers.enabled(p)) continue;
+            if (b.length() > 0) b.append(',');
+            b.append(p);
+        }
+        return b.length() == 0 ? null : b.toString();
+    }
+
     /**
-     * No test provider is running (exempt apps configured, driver disabled, or the ROM refused the
-     * mock-location op): ask the framework hook to hand one round of spoofed fixes directly to the
-     * location registrations of non-exempt apps. The real providers keep running for exempt apps.
+     * A test provider is not running (exempt apps configured, driver disabled, network mock off,
+     * or the ROM refused the mock-location op): ask the framework hook to hand one round of spoofed
+     * fixes directly to the location registrations of non-exempt apps on those providers. The real
+     * providers keep running for exempt apps.
      */
-    private void kickPump() {
+    private void kickPump(String missing) {
         try {
-            Location ack = lm.getLastKnownLocation(Keys.PUMP_PROVIDER);
+            Location ack = lm.getLastKnownLocation(Keys.PUMP_PROVIDER + ":" + missing);
             Bundle b = ack != null && Keys.PUMP_PROVIDER.equals(ack.getProvider()) ? ack.getExtras() : null;
             if (b == null) {
                 pumpStatus = "";
@@ -665,7 +678,9 @@ public class SpoofService extends Service {
             o.put("providerNote", providerNote);
             o.put("mockError", mockError);
             o.put("lastPush", lastPush);
-            o.put("pumpActive", running && !providers.hasProviders());
+            String missing = running ? missingProviders() : null;
+            o.put("pumpActive", missing != null);
+            o.put("pumpProviders", missing == null ? "" : missing);
             o.put("pumpStatus", pumpStatus).put("pumpInjected", pumpInjected)
                     .put("pumpLast", pumpLast).put("pumpKicks", pumpKicks);
         } catch (Exception ignored) {

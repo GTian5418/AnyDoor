@@ -67,7 +67,7 @@ final class AppHooks {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
                 if (p.args.length > 0 && (Keys.PROBE_PROVIDER.equals(p.args[0]) || Keys.STATE_PROVIDER.equals(p.args[0])
-                        || Keys.PUMP_PROVIDER.equals(p.args[0]))) return;
+                        || (p.args[0] instanceof String && ((String) p.args[0]).startsWith(Keys.PUMP_PROVIDER)))) return;
                 if (!st.started() || st.isExempt(pkg) || !st.bool(Keys.APP_HOOK, true)) return;
                 if (p.hasThrowable()) return;
                 String provider = p.args.length > 0 && p.args[0] instanceof String ? (String) p.args[0] : "gps";
@@ -146,6 +146,56 @@ final class AppHooks {
                 if (!st.started() || !st.bool(Keys.CELL_BLOCK, true)) return;
                 for (int i = 0; i < p.args.length; i++) {
                     if (p.args[i] instanceof Integer) p.args[i] = ((Integer) p.args[i]) & ~(0x10 | 0x400);
+                }
+            }
+        });
+        // Android 10+: requestCellInfoUpdate([WorkSource,] Executor, CellInfoCallback) is the modern
+        // getAllCellInfo; answer it with an empty list on the caller's executor.
+        HookUtil.hookAll(tm, "requestCellInfoUpdate", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                if (!st.started() || !st.bool(Keys.CELL_BLOCK, true)) return;
+                java.util.concurrent.Executor ex = null;
+                Object cb = null;
+                for (Object a : p.args) {
+                    if (a instanceof java.util.concurrent.Executor) ex = (java.util.concurrent.Executor) a;
+                    else if (a != null && !(a instanceof android.os.WorkSource)) cb = a;
+                }
+                HookUtil.deliverEmptyCells(cb, ex);
+                p.setResult(null);
+            }
+        });
+        // ServiceState carries the serving cell identity since Android 10
+        HookUtil.hookAll(tm, "getServiceState", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (!st.started() || !st.bool(Keys.CELL_BLOCK, true) || p.hasThrowable() || p.getResult() == null) return;
+                p.setResult(HookUtil.sanitizeServiceState(p.getResult()));
+            }
+        });
+        // connected WiFi inside NetworkCapabilities (Android 12+ replacement for getConnectionInfo)
+        Class<?> cm = android.net.ConnectivityManager.class;
+        HookUtil.hookAll(cm, "getNetworkCapabilities", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                if (!st.started() || !st.bool(Keys.WIFI_BLOCK, true) || p.hasThrowable()) return;
+                Object masked = HookUtil.maskWifiTransport(p.getResult(), st.privacy());
+                if (masked != null) p.setResult(masked);
+            }
+        });
+        Class<?> cbHandler = XposedHelpers.findClassIfExists("android.net.ConnectivityManager$CallbackHandler", null);
+        if (cbHandler != null) HookUtil.hookAll(cbHandler, "handleMessage", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                if (!st.started() || !st.bool(Keys.WIFI_BLOCK, true)) return;
+                if (p.args.length == 0 || !(p.args[0] instanceof android.os.Message)) return;
+                android.os.Bundle data = ((android.os.Message) p.args[0]).peekData();
+                if (data == null) return;
+                try {
+                    Object nc = data.getParcelable("NetworkCapabilities");
+                    Object masked = HookUtil.maskWifiTransport(nc, st.privacy());
+                    if (masked != null) data.putParcelable("NetworkCapabilities", (android.os.Parcelable) masked);
+                } catch (Throwable ignored) {
                 }
             }
         });

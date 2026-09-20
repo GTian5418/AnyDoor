@@ -18,7 +18,7 @@ if (!window.Native) {
   window.__mockNative = window.Native = {
     getState: () => JSON.stringify({ config: store.config, app: store.app, started: running, version: '1.3.3',
       service: running ? { running: true, lat: +store.config.lat, lng: +store.config.lng, curLat, curLng, speed: route ? route.speed : 0, bearing: 0, routeActive: !!route, paused: false, steps: Math.floor(steps), burstLeft: burst, routeDone: route ? Math.min(route.total, (Date.now() - routeStart) / 1000 * route.speed) : 0, routeTotal: route ? route.total : 0, joystick: false, providers: true, mockError: '' } : { running: false } }),
-    checkEnv: () => JSON.stringify({ version: '1.3.6', protocol: 1, sysVersion: '1.3.6', sysProtocol: 1, configRevision: 1, sysRevision: 1, mirrorRevision: 1, mirrorError: '', liveHook: true, deliveries: 0, moduleActive: true, systemHook: true, sysPrefs: true, sysChannel: 'prefs', sysStarted: false, started: false, mockGrant: true, sysHooks: 'last=1 deliver=0 report=1 accept=2 mock=4 wifi=ok pump=legacy', sysPump: 'legacy', injected: 0, lastInject: 0, root: true, mockAllowed: true, overlay: false, vectorCli: true, moduleEnabled: true, scope: 'android/0 com.android.phone/0', sdk: 28, device: 'Preview Device / Android 9', mockError: '' }),
+    checkEnv: () => JSON.stringify({ version: '1.4', protocol: 1, sysVersion: '1.4', sysProtocol: 1, configRevision: 1, sysRevision: 1, mirrorRevision: 1, mirrorError: '', liveHook: true, deliveries: 0, moduleActive: true, systemHook: true, sysPrefs: true, sysChannel: 'prefs', sysStarted: false, started: false, mockGrant: true, sysHooks: 'last=1 deliver=0 report=1 accept=2 mock=4 wifi=ok conn=ok cellgate=2 pump=legacy', sysPump: 'legacy', injected: 0, lastInject: 0, sysWifi: 'ok', sysConn: 'ok', sysCellGate: 2, sysSdk: 28, root: true, mockAllowed: true, overlay: false, vectorCli: true, moduleEnabled: true, scope: 'android/0 com.android.phone/0', sdk: 28, device: 'Preview Device / Android 9', mockError: '' }),
     diagnosticReport: () => JSON.stringify({ preview: true, version: '1.3.3' }),
     rootSetup: () => '✓ 已授予模拟位置权限\n✓ 已授予悬浮窗权限\nVector: ok\n✓ 已启用模块并设置作用域',
     reboot: () => alert('reboot (preview)'),
@@ -29,7 +29,20 @@ if (!window.Native) {
     setApp: (k, v) => { if (v == null) delete store.app[k]; else store.app[k] = v; },
     startRoute: (j) => { try { const o = JSON.parse(j); let t = 0; for (let i = 1; i < o.points.length; i++) { const a = o.points[i - 1], b = o.points[i]; t += Math.hypot((b.lat - a.lat) * 111320, (b.lng - a.lng) * 88000); } route = { points: o.points, speed: o.speed, total: t, stride: o.stride || 0 }; routeStart = Date.now(); running = true; curLat = o.points[0].lat; curLng = o.points[0].lng; return true; } catch (e) { return false; } },
     stopRoute: () => { route = null; },
-    planRoute: (id, j) => { const o = JSON.parse(j); const a = o.points[0], b = o.points[o.points.length - 1]; const pts = []; const n = 24; for (let i = 0; i <= n; i++) { const f = i / n; pts.push({ lat: a.lat + (b.lat - a.lat) * f + Math.sin(f * Math.PI * 3) * 0.0012, lng: a.lng + (b.lng - a.lng) * f + Math.cos(f * Math.PI * 2) * 0.0012, s: i % 6 === 0 ? 1 : 0 }); } let d = 0; for (let i = 1; i < pts.length; i++) d += Math.hypot((pts[i].lat - pts[i - 1].lat) * 111320, (pts[i].lng - pts[i - 1].lng) * 88000); cb(id, { ok: true, points: pts, distance: d, duration: d / 1.3, mode: o.mode }); },
+    planRoute: (id, j) => {
+      // three demo alternatives through every leg (start → vias → end), like Amap's alternative_route=3
+      const o = JSON.parse(j);
+      const routes = [0, 1, 2].map(k => {
+        const pts = [];
+        for (let leg = 1; leg < o.points.length; leg++) {
+          const a = o.points[leg - 1], b = o.points[leg], n = 24;
+          for (let i = leg === 1 ? 0 : 1; i <= n; i++) { const f = i / n, bulge = (k - 1) * 0.0018 * Math.sin(f * Math.PI); pts.push({ lat: a.lat + (b.lat - a.lat) * f + Math.sin(f * Math.PI * 3) * 0.0006 + bulge, lng: a.lng + (b.lng - a.lng) * f + Math.cos(f * Math.PI * 2) * 0.0006 - bulge, s: i % 6 === 0 ? 1 : 0 }); }
+        }
+        let d = 0; for (let i = 1; i < pts.length; i++) d += Math.hypot((pts[i].lat - pts[i - 1].lat) * 111320, (pts[i].lng - pts[i - 1].lng) * 88000);
+        return { points: pts, distance: d, duration: d / (1.3 + k * 0.1), label: k === 0 ? '高德推荐' : '备选 ' + (k + 1) };
+      });
+      cb(id, { ok: true, mode: o.mode, routes, points: routes[0].points, distance: routes[0].distance, duration: routes[0].duration });
+    },
     stepBurst: (n, r) => { burst = n; running = true; store.config.started = true; },
     stopSteps: () => { burst = 0; },
     setSteps: (n) => { steps = n; },
