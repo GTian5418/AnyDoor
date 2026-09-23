@@ -789,7 +789,7 @@ final class SystemHooks {
             if (Pump.injecting() || !st.started() || p.args.length == 0 || p.args[0] == null) return;
             String pkg = registrationPackage(p.thisObject);
             if (st.isExempt(pkg)) {
-                Object real = REAL_RESULTS.remove(p.args[0]);
+                Object real = REAL_RESULTS.get(p.args[0]);
                 if (real == null) return;
                 p.args[0] = real;
                 if (st.debug()) HookEntry.log("accept → real for " + pkg);

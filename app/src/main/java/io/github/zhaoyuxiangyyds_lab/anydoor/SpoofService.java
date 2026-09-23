@@ -166,16 +166,18 @@ public class SpoofService extends Service {
      * own; a dead one has to be brought back, otherwise the alarm would keep refreshing a lease with
      * nothing behind it and every hook would go on faking a location forever.
      */
-    static void revive(Context c) {
+    static boolean revive(Context c) {
         SpoofService s = instance;
-        if (s != null && s.running) return;
+        if (s != null && s.running) return true;
         Intent i = new Intent(c, SpoofService.class).setAction(ACTION_START);
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i);
             else c.startService(i);
+            return true;
         } catch (RuntimeException e) {
             // Alarm broadcasts normally whitelist a foreground-service start; some OEM builds do not.
             Log.w(TAG, "lease revive failed", e);
+            return false;
         }
     }
 

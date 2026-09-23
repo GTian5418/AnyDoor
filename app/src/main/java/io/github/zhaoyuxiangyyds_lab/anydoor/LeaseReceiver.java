@@ -43,8 +43,19 @@ public class LeaseReceiver extends BroadcastReceiver {
                 // own ticker may never run again.
                 Config.commit(p.edit());
                 Config.syncNow(c); // block until the mirror file is on disk
-                Lease.arm(c);
-                SpoofService.revive(c);
+                // Re-check after sync: the user may have stopped spoofing while we were
+                // frozen or syncing. Re-arming now would fight stopSpoof()'s cancel and
+                // revive() could flip STARTED back to true.
+                if (!p.getBoolean(Keys.STARTED, false)) {
+                    Lease.cancel(c);
+                    return; // finally releases wakelock + finishes
+                }
+                // Only re-arm if the service is alive or could be revived. If revive fails
+                // (OEM background restriction, etc.) let the grace window expire rather than
+                // spoofing forever with no driver behind it.
+                if (SpoofService.revive(c)) {
+                    Lease.arm(c);
+                }
             } finally {
                 try { if (wl != null && wl.isHeld()) wl.release(); } catch (Throwable ignored) {}
                 result.finish();
@@ -57,7 +68,7 @@ public class LeaseReceiver extends BroadcastReceiver {
             PowerManager pm = c.getSystemService(PowerManager.class);
             if (pm == null) return null;
             PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AnyDoor:lease");
-            wl.acquire(10000); // hard cap: syncNow's 14 s timeout minus margin
+            wl.acquire(16000); // keep CPU awake past syncNow's 14 s timeout
             return wl;
         } catch (Throwable t) {
             return null;
